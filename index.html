@@ -1,0 +1,856 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Fantasy Football — Weekly Standings</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600;700&display=swap" rel="stylesheet" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  :root {
+    --chalk: #FAF6EE;
+    --ink: #17241B;
+    --pitch: #234D35;
+    --turf: #3E7C59;
+    --gold: #D4A537;
+    --line: #DED5C0;
+    --muted: #71695A;
+    --danger: #B5482A;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--chalk); color: var(--ink); font-family: 'Inter', sans-serif; }
+  button { cursor: pointer; border: none; font-family: inherit; transition: transform .12s ease, opacity .12s ease; background: transparent; }
+  button:hover { opacity: .88; }
+  button:active { transform: scale(0.97); }
+  button:disabled { opacity: .5; cursor: default; }
+  input, select { font-family: inherit; }
+  input:focus, select:focus { outline: 2px solid var(--turf); outline-offset: 1px; }
+  .row:hover { background: rgba(62,124,89,0.06); }
+  @keyframes tilePulse {
+    0% { transform: scale(1); }
+    35% { transform: scale(1.12); box-shadow: 0 0 0 4px rgba(212,165,55,0.35); }
+    100% { transform: scale(1); }
+  }
+  @keyframes dotPulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+  .pulse { animation: tilePulse .6s ease; }
+  .live-dot { animation: dotPulse 2s ease-in-out infinite; }
+  @media (prefers-reduced-motion: reduce) {
+    .pulse, .live-dot { animation: none; }
+    button { transition: none; }
+  }
+  @media (max-width: 640px) { .hide-mobile { display: none; } }
+
+  .page { min-height: 100vh; }
+  .header { background: var(--pitch); padding: 20px 16px; }
+  .header-inner { max-width: 640px; margin: 0 auto; display: flex; justify-content: space-between; align-items: center; }
+  .brand { display: flex; align-items: center; gap: 12px; cursor: pointer; }
+  .brand-mark { width: 40px; height: 40px; border-radius: 8px; background: var(--gold); color: var(--pitch); display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: 700; flex-shrink: 0; }
+  .brand-eyebrow { color: rgba(250,246,238,0.65); font-size: 11px; letter-spacing: 0.14em; font-weight: 700; display: flex; align-items: center; gap: 6px; }
+  .brand-title { font-family: 'Bebas Neue', sans-serif; color: var(--chalk); font-size: 30px; letter-spacing: 0.02em; margin: 2px 0 0 0; line-height: 1; }
+  .admin-badge { background: rgba(212,165,55,0.18); color: var(--gold); padding: 6px 12px; border-radius: 20px; font-size: 12px; font-weight: 700; }
+  .main { max-width: 640px; margin: 0 auto; padding: 20px 16px 40px; }
+  .week-bar { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 12px; margin-bottom: 8px; }
+  .week-chip { background: transparent; color: var(--muted); border: 1px solid var(--line); border-radius: 20px; padding: 6px 14px; font-size: 13px; font-weight: 600; white-space: nowrap; }
+  .week-chip.active { background: var(--pitch); color: var(--chalk); border-color: var(--pitch); }
+  .mode-toggle { display: flex; gap: 6px; background: #F0EAD9; border-radius: 12px; padding: 4px; margin-bottom: 16px; }
+  .mode-btn { flex: 1; padding: 9px 10px; border-radius: 9px; font-size: 13.5px; font-weight: 700; color: var(--muted); }
+  .mode-btn.active { background: #fff; color: var(--pitch); box-shadow: 0 1px 2px rgba(0,0,0,0.08); }
+  .team-select-bar { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 12px; }
+  .team-chip { display: flex; align-items: center; gap: 7px; background: #fff; color: var(--ink); border: 1px solid var(--line); border-radius: 20px; padding: 6px 14px 6px 10px; font-size: 13px; font-weight: 600; white-space: nowrap; }
+  .team-chip.active { border-color: var(--pitch); background: var(--pitch); color: var(--chalk); }
+  .roster-card { background: #fff; border-radius: 14px; border: 1px solid var(--line); overflow: hidden; }
+  .roster-card-head { padding: 16px; display: flex; align-items: center; justify-content: space-between; background: #F4EFE4; }
+  .roster-card-title { display: flex; align-items: center; font-family: 'Bebas Neue', sans-serif; font-size: 22px; color: var(--pitch); letter-spacing: 0.02em; }
+  .roster-totals { display: flex; gap: 8px; }
+  .roster-player-row { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 10px; padding: 12px 16px; border-top: 1px solid var(--line); }
+  .roster-player-name { font-size: 14.5px; font-weight: 600; display: flex; align-items: center; }
+  .roster-player-info { display: flex; flex-direction: column; }
+  .club-line { display: flex; align-items: center; gap: 6px; margin-top: 2px; }
+  .club-crest { width: 16px; height: 16px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 8px; font-weight: 800; color: #fff; flex-shrink: 0; font-family: 'IBM Plex Mono', monospace; }
+  .club-name { font-size: 11.5px; color: var(--muted); font-weight: 600; }
+  .tile.cost { background: #EFE9D8; color: var(--pitch); }
+  .stat-label { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); text-align: center; margin-bottom: 3px; font-weight: 700; }
+  .table-wrap { background: #fff; border-radius: 14px; border: 1px solid var(--line); overflow: hidden; }
+  .table-grid { display: grid; grid-template-columns: 32px 1fr 90px; align-items: center; gap: 10px; }
+  .table-head { padding: 10px 16px; font-size: 11px; letter-spacing: 0.08em; font-weight: 700; color: var(--muted); text-transform: uppercase; background: #F4EFE4; }
+  .team-block { border-top: 1px solid var(--line); }
+  .team-row { width: 100%; background: transparent; padding: 14px 16px; text-align: left; font: inherit; color: inherit; }
+  .rank-num { font-family: 'IBM Plex Mono', monospace; font-weight: 700; font-size: 15px; }
+  .team-name-cell { display: flex; align-items: center; font-weight: 600; font-size: 15px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; margin-right: 10px; flex-shrink: 0; display: inline-block; }
+  .roster { background: #FBF8F1; padding: 4px 16px 12px 58px; }
+  .roster-grid { display: grid; grid-template-columns: 1fr 70px; align-items: center; }
+  .roster-row { padding: 6px 0; }
+  .roster-name { font-size: 13.5px; color: var(--ink); }
+  .tile { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; padding: 6px 10px; border-radius: 6px; background: var(--ink); color: var(--chalk); font-family: 'IBM Plex Mono', monospace; font-weight: 700; font-size: 15px; }
+  .tile.small { min-width: 34px; padding: 3px 8px; font-size: 12.5px; }
+  .tile.leader { background: var(--gold); color: var(--pitch); }
+  .footer { max-width: 640px; margin: 0 auto; padding: 16px 16px 36px; display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: var(--muted); }
+  .staff-link { color: var(--muted); padding: 4px 8px; display: flex; align-items: center; gap: 5px; font-size: 12px; }
+  .card { background: #fff; border-radius: 14px; border: 1px solid var(--line); padding: 20px 18px; margin-bottom: 18px; }
+  .card-title { font-family: 'Bebas Neue', sans-serif; font-size: 22px; letter-spacing: 0.02em; color: var(--pitch); margin: 0 0 8px 0; }
+  .muted { color: var(--muted); font-size: 13.5px; line-height: 1.5; margin-bottom: 14px; }
+  .label { font-size: 13px; font-weight: 600; color: var(--muted); }
+  .input, .select { width: 100%; padding: 9px 12px; border-radius: 8px; border: 1px solid var(--line); font-size: 14px; color: var(--ink); background: #fff; }
+  .error-text { color: var(--danger); font-size: 13px; margin-top: 8px; font-weight: 600; }
+  .btn-primary { background: var(--pitch); color: var(--chalk); padding: 10px 18px; border-radius: 8px; font-size: 14px; font-weight: 700; display: inline-flex; align-items: center; gap: 6px; }
+  .btn-primary-sm { background: var(--pitch); color: var(--chalk); padding: 9px 12px; border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; }
+  .btn-ghost { background: transparent; color: var(--ink); padding: 10px 16px; border-radius: 8px; font-size: 14px; font-weight: 600; border: 1px solid var(--line); display: inline-flex; align-items: center; gap: 6px; }
+  .icon-btn { background: transparent; padding: 6px; border-radius: 6px; display: flex; }
+  .manage-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 2px; border-bottom: 1px solid var(--line); font-size: 14px; }
+  .group-label { display: flex; align-items: center; font-size: 12.5px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; margin: 10px 0 4px; }
+  .add-row { display: flex; gap: 8px; margin-top: 12px; align-items: center; flex-wrap: wrap; }
+  .add-row .input { flex: 1; min-width: 120px; }
+  .color-input { width: 40px; height: 38px; border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
+  .score-edit-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0 6px 16px; font-size: 14px; }
+  .score-input { width: 64px; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--line); font-family: 'IBM Plex Mono', monospace; font-size: 14px; text-align: right; }
+  .pos-badge { display: inline-block; min-width: 30px; text-align: center; margin-right: 8px; padding: 2px 6px; border-radius: 4px; background: #EFE9D8; color: var(--pitch); font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; font-weight: 700; letter-spacing: 0.03em; }
+  .status-banner { display: flex; align-items: center; gap: 8px; margin-top: 14px; padding: 10px 12px; border-radius: 8px; font-size: 13.5px; line-height: 1.4; }
+  .status-ok { background: rgba(62,124,89,0.12); color: var(--turf); }
+  .status-error { background: rgba(181,72,42,0.1); color: var(--danger); }
+  .chev { color: #8A8272; margin-left: 8px; }
+  .center-msg { display: flex; align-items: center; justify-content: center; min-height: 100vh; font-weight: 600; color: var(--turf); }
+</style>
+</head>
+<body>
+<div id="app" class="center-msg">Loading table…</div>
+
+<script>
+  // Surfaces otherwise-silent script failures directly on the page,
+  // since phones can't easily open devtools to see the console.
+  function showFatalError(msg) {
+    var el = document.getElementById("app");
+    el.className = "center-msg";
+    el.innerHTML =
+      '<div style="max-width:340px;text-align:left;padding:20px;font-family:sans-serif;">' +
+      '<div style="font-weight:700;margin-bottom:8px;color:#B5482A;">Couldn\'t load the page</div>' +
+      '<div style="font-size:13px;color:#71695A;line-height:1.5;">' + msg + '</div>' +
+      '</div>';
+  }
+  window.addEventListener("error", function (e) {
+    showFatalError("Script error: " + (e.message || "unknown error") + (e.filename ? " (" + e.filename.split("/").pop() + ":" + e.lineno + ")" : ""));
+  });
+  window.addEventListener("unhandledrejection", function (e) {
+    showFatalError("Unhandled error: " + (e.reason && e.reason.message ? e.reason.message : String(e.reason)));
+  });
+  setTimeout(function () {
+    var el = document.getElementById("app");
+    if (el && el.textContent.indexOf("Loading table") !== -1) {
+      showFatalError(
+        "Still loading after 10 seconds with no error reported — this usually means the connection to the Firebase library or your database timed out. Check your internet connection, and double-check the Firestore database was created in the Firebase console."
+      );
+    }
+  }, 10000);
+</script>
+
+<script type="module">
+/* ============================================================
+   SETUP — read this before you publish
+   ============================================================
+   1. Create a free Firebase project at https://console.firebase.google.com
+   2. Add a Web App, then paste its config object below (FIREBASE_CONFIG).
+   3. In the Firebase console, enable "Firestore Database" (start in
+      test mode, or use the rules described in SETUP.md).
+   4. Change ADMIN_PASSWORD below to something only your admins know.
+   5. Open this file in a browser (or host it — see SETUP.md) and you're live.
+
+   Note on security: ADMIN_PASSWORD is a client-side UI gate, not real
+   authentication. Anyone who can view this file's source can find it,
+   and — depending on your Firestore rules — could write to the database
+   directly even without it. That's an acceptable tradeoff for a casual
+   friend league; see SETUP.md if you want it locked down further.
+   ============================================================ */
+
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyCZ7vU_cwoJq1rKM1RZK0fwviyaEmCwxyU",
+  authDomain: "fantasy-football-auction-9a665.firebaseapp.com",
+  projectId: "fantasy-football-auction-9a665",
+  storageBucket: "fantasy-football-auction-9a665.firebasestorage.app",
+  messagingSenderId: "377336547547",
+  appId: "1:377336547547:web:fdfc886c321ea340a964fe",
+};
+
+const ADMIN_PASSWORD = "league2026";
+
+let initializeApp, getFirestore, doc, setDoc, getDoc, onSnapshot;
+try {
+  const appMod = await import("https://www.gstatic.com/firebasejs/12.15.0/firebase-app.js");
+  const fsMod = await import("https://www.gstatic.com/firebasejs/12.15.0/firebase-firestore.js");
+  initializeApp = appMod.initializeApp;
+  getFirestore = fsMod.getFirestore;
+  doc = fsMod.doc;
+  setDoc = fsMod.setDoc;
+  getDoc = fsMod.getDoc;
+  onSnapshot = fsMod.onSnapshot;
+} catch (e) {
+  showFatalError(
+    "Couldn't load the Firebase library from the network (" + e.message + "). Check your internet connection and try again."
+  );
+  throw e;
+}
+
+const POSITIONS = ["GK", "DEF", "MID", "FWD"];
+const CURRENCY_SYMBOL = "£"; // change this if your league uses a different currency
+
+const DEFAULT_DATA = {
+  leagueName: "Fantasy Football",
+  currentWeek: 1,
+  totalWeeks: 10,
+  teams: [
+    { id: "t1", name: "Harbor FC", color: "#3E7C59" },
+    { id: "t2", name: "Ironside", color: "#8A5A44" },
+    { id: "t3", name: "Nightfall United", color: "#3B4A7A" },
+    { id: "t4", name: "Redgate", color: "#B5482A" },
+  ],
+  players: [
+    { id: "p1", teamId: "t1", name: "J. Okafor", position: "FWD", cost: 8.5, club: "Arsenal" },
+    { id: "p2", teamId: "t1", name: "M. Reyes", position: "MID", cost: 6.0, club: "Chelsea" },
+    { id: "p3", teamId: "t2", name: "S. Kowalski", position: "GK", cost: 5.0, club: "Man City" },
+    { id: "p4", teamId: "t2", name: "D. Whitfield", position: "DEF", cost: 4.5, club: "Liverpool" },
+    { id: "p5", teamId: "t3", name: "A. Nkemelu", position: "FWD", cost: 9.0, club: "Tottenham" },
+    { id: "p6", teamId: "t3", name: "R. Solano", position: "MID", cost: 5.5, club: "Newcastle" },
+    { id: "p7", teamId: "t4", name: "T. Fenwick", position: "DEF", cost: 4.0, club: "Aston Villa" },
+    { id: "p8", teamId: "t4", name: "L. Bramwell", position: "GK", cost: 4.5, club: "Brighton" },
+  ],
+  scores: {
+    p1: { 1: 14, 2: 9 }, p2: { 1: 7, 2: 11 },
+    p3: { 1: 12, 2: 12 }, p4: { 1: 6, 2: 8 },
+    p5: { 1: 9, 2: 15 }, p6: { 1: 10, 2: 7 },
+    p7: { 1: 5, 2: 6 }, p8: { 1: 8, 2: 9 },
+  },
+};
+
+function uid(prefix) { return prefix + Math.random().toString(36).slice(2, 9); }
+function esc(str) {
+  return String(str).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+const CLUB_PALETTE = ["#3E7C59", "#8A5A44", "#3B4A7A", "#B5482A", "#6B7F3E", "#5A4A8A", "#234D35", "#7A4A5A", "#4A6B7A", "#8A7A3E"];
+function clubInitials(club) {
+  const words = String(club).trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return "?";
+  if (words.length === 1) return words[0].slice(0, 3).toUpperCase();
+  return words.map((w) => w[0]).join("").slice(0, 3).toUpperCase();
+}
+function clubColor(club) {
+  let hash = 0;
+  const str = String(club || "");
+  for (let i = 0; i < str.length; i++) hash = (hash * 31 + str.charCodeAt(i)) >>> 0;
+  return CLUB_PALETTE[hash % CLUB_PALETTE.length];
+}
+function clubCrest(club) {
+  if (!club) return "";
+  return `<span class="club-crest" style="background:${clubColor(club)}">${clubInitials(club)}</span>`;
+}
+
+// ---- App state ----
+let data = null;
+let view = "public"; // public | login | admin
+let subView = "table"; // table | teams (public view only)
+let selectedWeek = null; // null = season
+let expandedTeam = null;
+let selectedTeamId = null;
+let isAdmin = sessionStorage.getItem("isAdmin") === "true";
+let pauseSync = false;
+let loginError = "";
+let saveError = "";
+let importStatus = null;
+let importing = false;
+let scoreWeek = 1;
+let newPlayerPosition = "MID";
+let newPlayerCost = "";
+let newPlayerClub = "";
+let pulseIds = {};
+
+const appEl = document.getElementById("app");
+
+// ---- Firebase init ----
+let app, db, docRef, connectionOk = true;
+try {
+  app = initializeApp(FIREBASE_CONFIG);
+  db = getFirestore(app);
+  docRef = doc(db, "league", "main");
+} catch (e) {
+  connectionOk = false;
+  saveError = "Firebase config error: " + e.message;
+}
+
+function scheduleFromSnapshot(next) {
+  data = next;
+  if (!pauseSync) render();
+}
+
+if (connectionOk) {
+  getDoc(docRef).then((snap) => {
+    if (!snap.exists()) {
+      setDoc(docRef, DEFAULT_DATA).catch(() => {});
+    }
+  }).catch(() => {});
+
+  onSnapshot(docRef, (snap) => {
+    if (snap.exists()) {
+      scheduleFromSnapshot(snap.data());
+    } else {
+      scheduleFromSnapshot(DEFAULT_DATA);
+    }
+    saveError = "";
+  }, (err) => {
+    saveError = "Connection error — changes may not save. (" + err.message + ")";
+    if (!data) data = DEFAULT_DATA;
+    render();
+  });
+} else {
+  data = DEFAULT_DATA;
+  saveError = "Firebase isn't configured yet — this is showing sample data only. See SETUP.md.";
+  render();
+}
+
+async function persist(next) {
+  data = next;
+  render();
+  if (!connectionOk) return;
+  try {
+    await setDoc(docRef, next);
+    saveError = "";
+  } catch (e) {
+    saveError = "Couldn't save — check your connection and try again.";
+    render();
+  }
+}
+
+function flashPulse(playerId) {
+  pulseIds[playerId] = true;
+  setTimeout(() => { pulseIds[playerId] = false; }, 700);
+}
+
+// ---- Derived data ----
+function computeTeamTotals(d, week) {
+  const totals = d.teams.map((team) => {
+    const roster = d.players.filter((p) => p.teamId === team.id);
+    let total = 0;
+    const rosterWithPoints = roster.map((p) => {
+      const weekly = d.scores[p.id] || {};
+      const pts = week ? (weekly[week] || 0) : Object.values(weekly).reduce((a, b) => a + b, 0);
+      total += pts;
+      return { ...p, points: pts };
+    });
+    return { ...team, roster: rosterWithPoints, total };
+  });
+  totals.sort((a, b) => b.total - a.total);
+  return totals;
+}
+
+// ---- Render ----
+function render() {
+  if (!data) { appEl.className = "center-msg"; appEl.textContent = "Loading table…"; return; }
+  appEl.className = "page";
+  document.title = data.leagueName + " — Weekly Standings";
+
+  const teamTotals = computeTeamTotals(data, selectedWeek);
+  const weekOptions = Array.from({ length: data.totalWeeks }, (_, i) => i + 1);
+  if (!selectedTeamId && data.teams.length) selectedTeamId = data.teams[0].id;
+
+  appEl.innerHTML = `
+    ${renderHeader()}
+    <main class="main">
+      ${view !== "admin" ? renderModeToggle() + renderWeekBar(weekOptions) : ""}
+      ${view === "public" && subView === "table" ? renderTable(teamTotals) : ""}
+      ${view === "public" && subView === "teams" ? renderTeamSelectBar() + renderRosterCard(teamTotals) : ""}
+      ${view === "login" ? renderLogin() : ""}
+      ${view === "admin" ? renderAdmin(weekOptions) : ""}
+    </main>
+    ${renderFooter()}
+  `;
+  bindEvents();
+}
+
+function renderModeToggle() {
+  return `
+    <div class="mode-toggle">
+      <button class="mode-btn ${subView === "table" ? "active" : ""}" data-action="set-subview" data-subview="table">League table</button>
+      <button class="mode-btn ${subView === "teams" ? "active" : ""}" data-action="set-subview" data-subview="teams">Team view</button>
+    </div>
+  `;
+}
+
+function renderTeamSelectBar() {
+  return `
+    <div class="team-select-bar">
+      ${data.teams.map((t) => `
+        <button class="team-chip ${selectedTeamId === t.id ? "active" : ""}" data-action="select-team-view" data-team-id="${t.id}">
+          <span class="dot" style="background:${t.color};margin-right:0;"></span>${esc(t.name)}
+        </button>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderRosterCard(teamTotals) {
+  const team = teamTotals.find((t) => t.id === selectedTeamId) || teamTotals[0];
+  if (!team) return `<div class="muted">No teams yet.</div>`;
+  const totalCost = team.roster.reduce((sum, p) => sum + (p.cost || 0), 0);
+  return `
+    <div class="roster-card">
+      <div class="roster-card-head">
+        <span class="roster-card-title"><span class="dot" style="background:${team.color}"></span>${esc(team.name)}</span>
+        <div class="roster-totals">
+          <div><div class="stat-label">Cost</div>${scoreTile(fmtCost(totalCost), false, false, false, true)}</div>
+          <div><div class="stat-label">${selectedWeek ? `Wk ${selectedWeek}` : "Points"}</div>${scoreTile(team.total, false, true, false)}</div>
+        </div>
+      </div>
+      ${team.roster.slice().sort((a, b) => b.points - a.points).map((p) => `
+        <div class="roster-player-row">
+          <span class="roster-player-info">
+            <span class="roster-player-name">${p.position ? `<span class="pos-badge">${p.position}</span>` : ""}${esc(p.name)}</span>
+            ${p.club ? `<span class="club-line">${clubCrest(p.club)}<span class="club-name">${esc(p.club)}</span></span>` : ""}
+          </span>
+          <div style="text-align:center;"><div class="stat-label">Cost</div>${scoreTile(fmtCost(p.cost || 0), true, false, false, true)}</div>
+          <div style="text-align:center;"><div class="stat-label">${selectedWeek ? `Wk ${selectedWeek} pts` : "Total pts"}</div>${scoreTile(p.points, true, false, !!pulseIds[p.id])}</div>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
+function fmtCost(n) {
+  const num = Number(n) || 0;
+  return CURRENCY_SYMBOL + (Number.isInteger(num) ? num : num.toFixed(1)) + "m";
+}
+
+function renderHeader() {
+  return `
+    <header class="header">
+      <div class="header-inner">
+        <div class="brand" data-action="view-public">
+          <div class="brand-mark">⚑</div>
+          <div>
+            <div class="brand-eyebrow">
+              WEEKLY STANDINGS
+              ${connectionOk ? '<span class="live-dot" style="width:6px;height:6px;border-radius:50%;background:#D4A537;display:inline-block;"></span>' : ""}
+            </div>
+            <h1 class="brand-title">${esc(data.leagueName)}</h1>
+          </div>
+        </div>
+        ${view === "admin" ? '<div class="admin-badge">Admin mode</div>' : ""}
+      </div>
+    </header>
+  `;
+}
+
+function renderWeekBar(weekOptions) {
+  return `
+    <div class="week-bar">
+      <button class="week-chip ${selectedWeek === null ? "active" : ""}" data-action="select-week" data-week="">Season</button>
+      ${weekOptions.map((w) => `<button class="week-chip ${selectedWeek === w ? "active" : ""}" data-action="select-week" data-week="${w}">Wk ${w}</button>`).join("")}
+    </div>
+  `;
+}
+
+function renderTable(teamTotals) {
+  return `
+    <div class="table-wrap">
+      <div class="table-head table-grid">
+        <span>#</span><span>Team</span><span style="text-align:right">${selectedWeek ? `Wk ${selectedWeek}` : "Points"}</span>
+      </div>
+      ${teamTotals.map((team, i) => {
+        const isLeader = i === 0 && team.total > 0;
+        const isOpen = expandedTeam === team.id;
+        return `
+          <div class="team-block">
+            <button class="team-row row table-grid" data-action="toggle-team" data-team-id="${team.id}">
+              <span class="rank-num" style="color:${isLeader ? "#D4A537" : "#17241B"}">${i + 1}</span>
+              <span class="team-name-cell">
+                <span class="dot" style="background:${team.color}"></span>
+                ${esc(team.name)}
+                <span class="chev">${isOpen ? "▲" : "▼"}</span>
+              </span>
+              <span style="display:flex;justify-content:flex-end">${scoreTile(team.total, false, isLeader, false)}</span>
+            </button>
+            ${isOpen ? `
+              <div class="roster">
+                ${team.roster.slice().sort((a, b) => b.points - a.points).map((p) => `
+                  <div class="roster-row roster-grid">
+                    <span class="roster-name">${p.position ? `<span class="pos-badge">${p.position}</span>` : ""}${esc(p.name)}</span>
+                    <span style="display:flex;justify-content:flex-end">${scoreTile(p.points, true, false, !!pulseIds[p.id])}</span>
+                  </div>
+                `).join("")}
+              </div>
+            ` : ""}
+          </div>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function scoreTile(value, small, leader, pulse, isCost) {
+  const cls = ["tile", small ? "small" : "", leader ? "leader" : "", pulse ? "pulse" : "", isCost ? "cost" : ""].filter(Boolean).join(" ");
+  return `<span class="${cls}">${value}</span>`;
+}
+
+function renderFooter() {
+  return `
+    <footer class="footer">
+      <span>${esc(data.leagueName)} · updates live for everyone viewing this page</span>
+      ${view === "public" ? '<button class="staff-link" data-action="view-login">🔒 Staff</button>' : ""}
+    </footer>
+  `;
+}
+
+function renderLogin() {
+  return `
+    <div class="card">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+        <span>🔒</span><h2 class="card-title" style="margin:0">Staff sign-in</h2>
+      </div>
+      <p class="muted">This gate keeps casual visitors out of the edit screen. It isn't strong security — anyone with the password can make changes, so only share it with people you trust to manage the table.</p>
+      <input class="input" type="password" id="pw-input" placeholder="Password" autofocus />
+      ${loginError ? `<div class="error-text">${esc(loginError)}</div>` : ""}
+      <div style="display:flex;gap:10px;margin-top:14px;">
+        <button class="btn-primary" data-action="login-submit">Sign in</button>
+        <button class="btn-ghost" data-action="view-public">Cancel</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderAdmin(weekOptions) {
+  return `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;">
+      <div class="muted" style="margin-bottom:0">Changes save immediately and are visible to everyone viewing this page.</div>
+      <button class="btn-ghost" data-action="exit-admin">↩ Exit admin</button>
+    </div>
+    ${saveError ? `<div class="error-text" style="margin-bottom:14px;">${esc(saveError)}</div>` : ""}
+
+    <div class="card">
+      <h2 class="card-title">League settings</h2>
+      <label class="label">League name</label>
+      <div class="add-row" style="margin-top:8px;">
+        <input class="input" id="league-name-input" value="${esc(data.leagueName)}" />
+        <button class="btn-primary-sm" data-action="save-league-name">💾</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 class="card-title">Weekly points</h2>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">
+        <label class="label">Week</label>
+        <select class="select" id="score-week-select" style="width:auto;">
+          ${weekOptions.map((w) => `<option value="${w}" ${w === scoreWeek ? "selected" : ""}>Week ${w}</option>`).join("")}
+        </select>
+      </div>
+      <div>
+        ${data.teams.map((team) => `
+          <div>
+            <div class="group-label"><span class="dot" style="background:${team.color}"></span>${esc(team.name)}</div>
+            ${data.players.filter((p) => p.teamId === team.id).map((p) => `
+              <div class="score-edit-row">
+                <span>${p.position ? `<span class="pos-badge">${p.position}</span>` : ""}${esc(p.name)}</span>
+                <input class="score-input" type="number" data-score-input data-player-id="${p.id}"
+                  value="${(data.scores[p.id] && data.scores[p.id][scoreWeek] !== undefined) ? data.scores[p.id][scoreWeek] : ""}" />
+              </div>
+            `).join("")}
+          </div>
+        `).join("")}
+      </div>
+      <button class="btn-primary" style="margin-top:14px;" data-action="save-scores">💾 Save Week ${scoreWeek} points</button>
+    </div>
+
+    <div class="card">
+      <h2 class="card-title">Teams</h2>
+      ${data.teams.map((team) => `
+        <div class="manage-row">
+          <span style="display:flex;align-items:center;gap:8px;"><span class="dot" style="background:${team.color}"></span>${esc(team.name)}</span>
+          <button class="icon-btn" data-action="remove-team" data-team-id="${team.id}" aria-label="Remove ${esc(team.name)}">🗑</button>
+        </div>
+      `).join("")}
+      <div class="add-row">
+        <input class="input" id="new-team-name" placeholder="New team name" />
+        <input class="color-input" type="color" id="new-team-color" value="#3E7C59" aria-label="Team color" />
+        <button class="btn-primary-sm" data-action="add-team">+</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 class="card-title">Players</h2>
+      ${data.teams.map((team) => {
+        const roster = data.players.filter((p) => p.teamId === team.id);
+        if (!roster.length) return "";
+        return `
+          <div style="margin-bottom:10px;">
+            <div class="group-label"><span class="dot" style="background:${team.color}"></span>${esc(team.name)}</div>
+            ${roster.map((p) => `
+              <div class="manage-row">
+                <span>${p.position ? `<span class="pos-badge">${p.position}</span>` : ""}${esc(p.name)} <span class="muted" style="margin:0;font-size:12px;">${fmtCost(p.cost || 0)}${p.club ? " · " + esc(p.club) : ""}</span></span>
+                <button class="icon-btn" data-action="remove-player" data-player-id="${p.id}" aria-label="Remove ${esc(p.name)}">✕</button>
+              </div>
+            `).join("")}
+          </div>
+        `;
+      }).join("")}
+      <div class="add-row">
+        <input class="input" id="new-player-name" placeholder="New player name" />
+        <select class="select" id="new-player-team" style="width:auto;">
+          ${data.teams.map((t) => `<option value="${t.id}">${esc(t.name)}</option>`).join("")}
+        </select>
+        <select class="select" id="new-player-position" style="width:auto;">
+          ${POSITIONS.map((pos) => `<option value="${pos}" ${pos === newPlayerPosition ? "selected" : ""}>${pos}</option>`).join("")}
+        </select>
+        <input class="input" id="new-player-cost" type="number" step="0.1" placeholder="Cost" style="width:80px;flex:none;" />
+        <input class="input" id="new-player-club" placeholder="Club (e.g. Arsenal)" style="width:140px;flex:none;" />
+        <button class="btn-primary-sm" data-action="add-player">+</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 class="card-title">Import from Excel</h2>
+      <p class="muted">Upload an .xlsx (or .csv) file with <strong>Team</strong>, <strong>Player</strong>, <strong>Position</strong>, <strong>Cost</strong>, and <strong>Club</strong> columns to bulk-create teams and players. Add columns named <strong>Week 1</strong>, <strong>Week 2</strong>, etc. to import points for those weeks too. Matching an existing team or player by name updates it instead of duplicating it.</p>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;">
+        <button class="btn-ghost" data-action="download-template">⬇ Download template</button>
+        <button class="btn-primary" data-action="trigger-import" ${importing ? "disabled" : ""}>⬆ ${importing ? "Importing…" : "Choose file to import"}</button>
+        <input type="file" id="import-file-input" accept=".xlsx,.xls,.csv" style="display:none;" />
+      </div>
+      ${importStatus ? `<div class="status-banner ${importStatus.type === "ok" ? "status-ok" : "status-error"}">${importStatus.type === "ok" ? "✓" : "⚠"} <span>${esc(importStatus.message)}</span></div>` : ""}
+    </div>
+  `;
+}
+
+// ---- Event binding ----
+function bindEvents() {
+  appEl.querySelectorAll("[data-action]").forEach((el) => {
+    el.addEventListener("click", handleAction);
+  });
+  const weekSelect = document.getElementById("score-week-select");
+  if (weekSelect) weekSelect.addEventListener("change", (e) => {
+    scoreWeek = Number(e.target.value);
+    render();
+  });
+  const importInput = document.getElementById("import-file-input");
+  if (importInput) importInput.addEventListener("change", handleImportFile);
+}
+
+function handleAction(e) {
+  const el = e.currentTarget;
+  const action = el.dataset.action;
+
+  if (action === "view-public") { view = "public"; render(); }
+  else if (action === "set-subview") { subView = el.dataset.subview; render(); }
+  else if (action === "select-team-view") { selectedTeamId = el.dataset.teamId; render(); }
+  else if (action === "view-login") { view = "login"; loginError = ""; render(); }
+  else if (action === "exit-admin") { pauseSync = false; view = "public"; render(); }
+  else if (action === "select-week") {
+    selectedWeek = el.dataset.week === "" ? null : Number(el.dataset.week);
+    render();
+  }
+  else if (action === "toggle-team") {
+    const id = el.dataset.teamId;
+    expandedTeam = expandedTeam === id ? null : id;
+    render();
+  }
+  else if (action === "login-submit") {
+    const pw = document.getElementById("pw-input").value;
+    if (pw === ADMIN_PASSWORD) {
+      isAdmin = true;
+      sessionStorage.setItem("isAdmin", "true");
+      view = "admin";
+      pauseSync = true;
+      scoreWeek = data.currentWeek || 1;
+      loginError = "";
+    } else {
+      loginError = "Incorrect password.";
+    }
+    render();
+  }
+  else if (action === "save-scores") {
+    const scores = { ...data.scores };
+    appEl.querySelectorAll("[data-score-input]").forEach((input) => {
+      const playerId = input.dataset.playerId;
+      const raw = input.value;
+      const num = raw === "" ? 0 : Number(raw);
+      scores[playerId] = { ...(scores[playerId] || {}), [scoreWeek]: isNaN(num) ? 0 : num };
+      flashPulse(playerId);
+    });
+    persist({ ...data, scores });
+  }
+  else if (action === "save-league-name") {
+    const input = document.getElementById("league-name-input");
+    const name = input.value.trim();
+    if (!name) return;
+    persist({ ...data, leagueName: name });
+  }
+  else if (action === "add-team") {
+    const nameInput = document.getElementById("new-team-name");
+    const colorInput = document.getElementById("new-team-color");
+    const name = nameInput.value.trim();
+    if (!name) return;
+    const next = { ...data, teams: [...data.teams, { id: uid("t"), name, color: colorInput.value }] };
+    persist(next);
+  }
+  else if (action === "remove-team") {
+    const teamId = el.dataset.teamId;
+    const next = {
+      ...data,
+      teams: data.teams.filter((t) => t.id !== teamId),
+      players: data.players.filter((p) => p.teamId !== teamId),
+    };
+    persist(next);
+  }
+  else if (action === "add-player") {
+    const nameInput = document.getElementById("new-player-name");
+    const teamSelect = document.getElementById("new-player-team");
+    const posSelect = document.getElementById("new-player-position");
+    const costInput = document.getElementById("new-player-cost");
+    const clubInput = document.getElementById("new-player-club");
+    const name = nameInput.value.trim();
+    if (!name || !teamSelect.value) return;
+    newPlayerPosition = posSelect.value;
+    const cost = costInput.value === "" ? 0 : Number(costInput.value);
+    const next = {
+      ...data,
+      players: [...data.players, {
+        id: uid("p"), teamId: teamSelect.value, name,
+        position: posSelect.value, cost: isNaN(cost) ? 0 : cost,
+        club: clubInput.value.trim(),
+      }],
+    };
+    persist(next);
+  }
+  else if (action === "remove-player") {
+    const playerId = el.dataset.playerId;
+    const scores = { ...data.scores };
+    delete scores[playerId];
+    persist({ ...data, players: data.players.filter((p) => p.id !== playerId), scores });
+  }
+  else if (action === "download-template") {
+    downloadTemplate();
+  }
+  else if (action === "trigger-import") {
+    document.getElementById("import-file-input").click();
+  }
+}
+
+function downloadTemplate() {
+  const headers = ["Team", "Player", "Position", "Cost", "Club", "Week 1", "Week 2", "Week 3"];
+  const sample = [
+    ["Harbor FC", "J. Okafor", "FWD", 8.5, "Arsenal", 14, 9, 11],
+    ["Harbor FC", "M. Reyes", "MID", 6.0, "Chelsea", 7, 11, 8],
+    ["Ironside", "S. Kowalski", "GK", 5.0, "Man City", 12, 12, 10],
+  ];
+  const ws = XLSX.utils.aoa_to_sheet([headers, ...sample]);
+  ws["!cols"] = [{ wch: 16 }, { wch: 18 }, { wch: 10 }, { wch: 8 }, { wch: 14 }, { wch: 8 }, { wch: 8 }, { wch: 8 }];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Roster");
+  XLSX.writeFile(wb, "league-import-template.xlsx");
+}
+
+function handleImportFile(e) {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  importing = true;
+  importStatus = null;
+  render();
+
+  const reader = new FileReader();
+  reader.onload = (evt) => {
+    try {
+      const wb = XLSX.read(evt.target.result, { type: "array" });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+      if (!rows.length) {
+        importStatus = { type: "error", message: "That file doesn't have any rows to import." };
+        importing = false;
+        render();
+        return;
+      }
+      const keys = Object.keys(rows[0]);
+      const findKey = (target) => keys.find((k) => k.trim().toLowerCase() === target);
+      const teamKey = findKey("team");
+      const playerKey = findKey("player") || findKey("name");
+      const posKey = findKey("position") || findKey("pos");
+      const costKey = findKey("cost") || findKey("price") || findKey("value");
+      const clubKey = findKey("club") || findKey("real team") || findKey("realteam");
+      const weekKeys = keys.filter((k) => /^week\s*\d+$/i.test(k.trim()));
+
+      if (!teamKey || !playerKey) {
+        importStatus = { type: "error", message: "Couldn't find 'Team' and 'Player' columns. Use the template for the right headers." };
+        importing = false;
+        render();
+        return;
+      }
+
+      let teams = [...data.teams];
+      let players = [...data.players];
+      let scores = { ...data.scores };
+      let teamsAdded = 0, playersAdded = 0, playersUpdated = 0;
+      const palette = ["#3E7C59", "#8A5A44", "#3B4A7A", "#B5482A", "#6B7F3E", "#5A4A8A"];
+
+      rows.forEach((row) => {
+        const teamName = String(row[teamKey] || "").trim();
+        const playerName = String(row[playerKey] || "").trim();
+        if (!teamName || !playerName) return;
+
+        let team = teams.find((t) => t.name.toLowerCase() === teamName.toLowerCase());
+        if (!team) {
+          team = { id: uid("t"), name: teamName, color: palette[teamsAdded % palette.length] };
+          teams.push(team);
+          teamsAdded++;
+        }
+
+        let position = posKey ? String(row[posKey] || "").trim().toUpperCase() : "";
+        if (!POSITIONS.includes(position)) position = "MID";
+
+        let cost = 0;
+        if (costKey) {
+          const rawCost = Number(row[costKey]);
+          cost = isNaN(rawCost) ? 0 : rawCost;
+        }
+        const club = clubKey ? String(row[clubKey] || "").trim() : "";
+
+        let player = players.find((p) => p.teamId === team.id && p.name.toLowerCase() === playerName.toLowerCase());
+        if (!player) {
+          player = { id: uid("p"), teamId: team.id, name: playerName, position, cost, club };
+          players.push(player);
+          playersAdded++;
+        } else {
+          player.position = position;
+          if (costKey) player.cost = cost;
+          if (clubKey) player.club = club;
+          playersUpdated++;
+        }
+
+        weekKeys.forEach((wk) => {
+          const weekNum = parseInt(wk.match(/\d+/)[0], 10);
+          const raw = row[wk];
+          if (raw === "" || raw === null || raw === undefined) return;
+          const num = Number(raw);
+          if (isNaN(num)) return;
+          scores[player.id] = { ...(scores[player.id] || {}), [weekNum]: num };
+        });
+      });
+
+      const maxWeekFromFile = weekKeys.reduce((max, wk) => Math.max(max, parseInt(wk.match(/\d+/)[0], 10)), 0);
+
+      const next = { ...data, teams, players, scores, totalWeeks: Math.max(data.totalWeeks, maxWeekFromFile) };
+      persist(next);
+      importStatus = {
+        type: "ok",
+        message: `Imported: ${teamsAdded} new team${teamsAdded === 1 ? "" : "s"}, ${playersAdded} new player${playersAdded === 1 ? "" : "s"}${playersUpdated ? `, ${playersUpdated} player${playersUpdated === 1 ? "" : "s"} updated` : ""}.`,
+      };
+    } catch (err) {
+      importStatus = { type: "error", message: "Couldn't read that file. Make sure it's a .xlsx or .csv export." };
+    } finally {
+      importing = false;
+      const input = document.getElementById("import-file-input");
+      if (input) input.value = "";
+      render();
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+// Restore admin session if the tab already signed in
+if (isAdmin) { view = "admin"; pauseSync = true; scoreWeek = 1; }
+</script>
+</body>
+</html>
