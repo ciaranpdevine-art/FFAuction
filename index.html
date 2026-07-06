@@ -193,8 +193,8 @@ const FIREBASE_CONFIG = {
   appId: "1:377336547547:web:fdfc886c321ea340a964fe",
 };
 
-const ADMIN_PASSWORD = "league2026";
-const BUILD_NUMBER = "14"; // bump this by 1 every time a new file is handed over
+const ADMIN_PASSWORD = "zxcvb";
+const BUILD_NUMBER = "17"; // bump this by 1 every time a new file is handed over
 
 let initializeApp, getFirestore, doc, setDoc, getDoc, onSnapshot;
 try {
@@ -289,6 +289,7 @@ let expandedPlayer = null;
 let selectedTeamId = null;
 let selectedSquadTeamId = null;
 let playerListFilter = "all"; // all | available | unavailable
+let editingClubPlayerId = null;
 let isAdmin = sessionStorage.getItem("isAdmin") === "true";
 let pauseSync = false;
 let loginError = "";
@@ -300,6 +301,7 @@ let newPlayerPosition = "MID";
 let newPlayerCost = "";
 let newPlayerClub = "";
 let pulseIds = {};
+let scrollPositions = {};
 
 const appEl = document.getElementById("app");
 
@@ -416,6 +418,12 @@ function render() {
   appEl.className = "page";
   document.title = data.leagueName + " — Weekly Standings";
 
+  // Remember horizontal scroll position of tab/chip bars so a full re-render
+  // (which rebuilds the whole DOM) doesn't snap them back to the start.
+  appEl.querySelectorAll("[data-scroll-id]").forEach((el) => {
+    scrollPositions[el.dataset.scrollId] = el.scrollLeft;
+  });
+
   const teamTotals = computeTeamTotals(data, selectedWeek);
   const seasonTotals = computeTeamTotals(data, null);
   const weekOptions = Array.from({ length: data.totalWeeks }, (_, i) => i + 1);
@@ -451,7 +459,7 @@ function renderModeToggle() {
     ["prizes", "Prizes"],
   ];
   return `
-    <div class="mode-toggle">
+    <div class="mode-toggle" data-scroll-id="nav-tabs">
       ${tabs.map(([key, label]) => `<button class="mode-btn ${subView === key ? "active" : ""}" data-action="set-subview" data-subview="${key}">${label}</button>`).join("")}
     </div>
   `;
@@ -459,7 +467,7 @@ function renderModeToggle() {
 
 function renderTeamSelectBar() {
   return `
-    <div class="team-select-bar">
+    <div class="team-select-bar" data-scroll-id="teamview-chips">
       ${data.teams.map((t) => `
         <button class="team-chip ${selectedTeamId === t.id ? "active" : ""}" data-action="select-team-view" data-team-id="${t.id}">
           <span class="dot" style="background:${t.color};margin-right:0;"></span>${esc(t.name)}
@@ -476,7 +484,7 @@ function renderPlayerList() {
     ["unavailable", "Unavailable"],
   ];
   const filterBar = `
-    <div class="week-bar">
+    <div class="week-bar" data-scroll-id="player-filter">
       ${filters.map(([key, label]) => `<button class="week-chip ${playerListFilter === key ? "active" : ""}" data-action="set-player-filter" data-filter="${key}">${label}</button>`).join("")}
     </div>
   `;
@@ -520,10 +528,14 @@ function renderRosterCard(seasonTotals) {
   const totalCost = team.roster.reduce((sum, p) => sum + (p.cost || 0), 0);
   const budget = data.budgetPerTeam ?? 100;
   const remaining = budget - totalCost;
+  const formation = team.formation || "442";
   return `
     <div class="roster-card">
       <div class="roster-card-head">
-        <span class="roster-card-title"><span class="dot" style="background:${team.color}"></span>${esc(team.name)}</span>
+        <span class="roster-card-title">
+          <span class="dot" style="background:${team.color}"></span>${esc(team.name)}
+          <span class="pos-badge" style="margin-left:8px;">${formation.split("").join("-")}</span>
+        </span>
         <div class="roster-totals">
           <div><div class="stat-label">Season pts</div>${scoreTile(team.total, false, true, false)}</div>
         </div>
@@ -647,7 +659,7 @@ function renderHeader() {
 
 function renderWeekBar(weekOptions) {
   return `
-    <div class="week-bar">
+    <div class="week-bar" data-scroll-id="league-table-weekbar">
       <button class="week-chip ${selectedWeek === null ? "active" : ""}" data-action="select-week" data-week="">Season</button>
       ${weekOptions.map((w) => `<button class="week-chip ${selectedWeek === w ? "active" : ""}" data-action="select-week" data-week="${w}">Wk ${w}</button>`).join("")}
     </div>
@@ -717,643 +729,4 @@ function renderPlayerBreakdown(p) {
 }
 
 function scoreTile(value, small, leader, pulse, isCost) {
-  const cls = ["tile", small ? "small" : "", leader ? "leader" : "", pulse ? "pulse" : "", isCost ? "cost" : ""].filter(Boolean).join(" ");
-  return `<span class="${cls}">${value}</span>`;
-}
-
-function renderFooter() {
-  return `
-    <footer class="footer">
-      <span>${esc(data.leagueName)} · Build ${BUILD_NUMBER}</span>
-      ${view === "public" ? '<button class="staff-link" data-action="view-login">🔒 Staff</button>' : ""}
-    </footer>
-  `;
-}
-
-function renderLogin() {
-  return `
-    <div class="card">
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
-        <span>🔒</span><h2 class="card-title" style="margin:0">Staff sign-in</h2>
-      </div>
-      <p class="muted">This gate keeps casual visitors out of the edit screen. It isn't strong security — anyone with the password can make changes, so only share it with people you trust to manage the table.</p>
-      <input class="input" type="password" id="pw-input" placeholder="Password" autofocus />
-      ${loginError ? `<div class="error-text">${esc(loginError)}</div>` : ""}
-      <div style="display:flex;gap:10px;margin-top:14px;">
-        <button class="btn-primary" data-action="login-submit">Sign in</button>
-        <button class="btn-ghost" data-action="view-public">Cancel</button>
-      </div>
-    </div>
-  `;
-}
-
-function renderSquadBuilder() {
-  if (!selectedSquadTeamId) return `<div class="muted">Pick a team above to build its squad.</div>`;
-  const team = data.teams.find((t) => t.id === selectedSquadTeamId);
-  if (!team) return "";
-  const formation = team.formation || "442";
-  const counts = FORMATIONS[formation];
-  const entries = getSquadEntries(data, team);
-
-  const takenByOthers = new Set();
-  data.teams.forEach((t) => {
-    if (t.id === team.id) return;
-    getSquadEntries(data, t).forEach((e) => takenByOthers.add(e.id));
-  });
-
-  const spend = entries.reduce((sum, e) => {
-    const p = data.players.find((pp) => pp.id === e.id);
-    const cost = e.cost !== null && e.cost !== undefined ? e.cost : (p && p.cost) || 0;
-    return sum + cost;
-  }, 0);
-
-  let slotsHtml = "";
-  POSITIONS.forEach((pos) => {
-    const n = counts[pos] || 0;
-    if (!n) return;
-    const currentForPos = entries.filter((e) => {
-      const p = data.players.find((pp) => pp.id === e.id);
-      return p && p.position === pos;
-    });
-    slotsHtml += `<div class="group-label">${pos}</div>`;
-    for (let i = 0; i < n; i++) {
-      const currentEntry = currentForPos[i];
-      const currentId = currentEntry ? currentEntry.id : "";
-      const currentCost = currentEntry && currentEntry.cost !== null && currentEntry.cost !== undefined ? currentEntry.cost : "";
-      const eligible = data.players.filter((p) => p.position === pos && (!takenByOthers.has(p.id) || p.id === currentId));
-      slotsHtml += `
-        <div style="display:flex;gap:6px;margin-bottom:6px;">
-          <select class="select squad-slot" data-slot-pos="${pos}" style="flex:1;">
-            <option value="">— empty —</option>
-            ${eligible.map((p) => `<option value="${p.id}" ${p.id === currentId ? "selected" : ""}>${esc(p.name)}${p.club ? " (" + esc(p.club) + ")" : ""}</option>`).join("")}
-          </select>
-          <input class="score-mini-input squad-slot-cost" type="number" step="0.1" placeholder="Cost" value="${currentCost}" style="width:72px;" />
-        </div>
-      `;
-    }
-  });
-
-  const budget = data.budgetPerTeam ?? 100;
-  const remaining = budget - spend;
-
-  return `
-    <div class="mode-toggle" style="margin-bottom:14px;">
-      ${Object.keys(FORMATIONS).map((f) => `<button class="mode-btn ${formation === f ? "active" : ""}" data-action="set-formation" data-formation="${f}">${f}</button>`).join("")}
-    </div>
-    <div style="display:flex;gap:16px;align-items:center;margin-bottom:10px;">
-      <div><div class="stat-label">Spent</div>${scoreTile(fmtCost(spend), true, false, false, true)}</div>
-      <div><div class="stat-label">Remaining</div>${scoreTile(fmtCost(remaining), true, remaining < 0, false, remaining >= 0)}</div>
-    </div>
-    <div id="squad-slots">${slotsHtml}</div>
-    <button class="btn-primary" style="margin-top:6px;" data-action="save-squad">💾 Save squad</button>
-  `;
-}
-
-function renderAdmin(weekOptions) {
-  return `
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;">
-      <div class="muted" style="margin-bottom:0">Changes save immediately and are visible to everyone viewing this page.</div>
-      <button class="btn-ghost" data-action="exit-admin">↩ Exit admin</button>
-    </div>
-    ${saveError ? `<div class="error-text" style="margin-bottom:14px;">${esc(saveError)}</div>` : ""}
-
-    <div class="card">
-      <h2 class="card-title">League settings</h2>
-      <label class="label">League name</label>
-      <div class="add-row" style="margin-top:8px;margin-bottom:14px;">
-        <input class="input" id="league-name-input" value="${esc(data.leagueName)}" />
-      </div>
-      <label class="label">Total weeks in season</label>
-      <div class="add-row" style="margin-top:8px;margin-bottom:14px;">
-        <input class="input" id="total-weeks-input" type="number" min="1" max="60" value="${data.totalWeeks}" style="max-width:100px;" />
-      </div>
-      <label class="label">Budget per team (${CURRENCY_SYMBOL}m)</label>
-      <div class="add-row" style="margin-top:8px;">
-        <input class="input" id="budget-per-team-input" type="number" min="0" step="0.5" value="${data.budgetPerTeam ?? 100}" style="max-width:100px;" />
-        <button class="btn-primary-sm" data-action="save-league-settings">💾</button>
-      </div>
-    </div>
-
-    <div class="card">
-      <h2 class="card-title">Weekly points</h2>
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">
-        <label class="label">Week</label>
-        <select class="select" id="score-week-select" style="width:auto;">
-          ${weekOptions.map((w) => `<option value="${w}" ${w === scoreWeek ? "selected" : ""}>Week ${w}</option>`).join("")}
-        </select>
-      </div>
-      <div>
-        ${data.teams.map((team) => `
-          <div>
-            <div class="group-label"><span class="dot" style="background:${team.color}"></span>${esc(team.name)}</div>
-            ${getTeamRosterIds(data, team).map((id) => data.players.find((p) => p.id === id)).filter(Boolean).map((p) => `
-              <div class="score-edit-row">
-                <span>${p.position ? `<span class="pos-badge">${p.position}</span>` : ""}${esc(p.name)}</span>
-                <input class="score-input" type="number" data-score-input data-player-id="${p.id}"
-                  value="${(data.scores[p.id] && data.scores[p.id][scoreWeek] !== undefined) ? data.scores[p.id][scoreWeek] : ""}" />
-              </div>
-            `).join("")}
-          </div>
-        `).join("")}
-      </div>
-      <button class="btn-primary" style="margin-top:14px;" data-action="save-scores">💾 Save Week ${scoreWeek} points</button>
-    </div>
-
-    <div class="card">
-      <h2 class="card-title">Squad builder</h2>
-      <p class="muted">Pick a team, choose its formation, then fill each slot from the player pool below. A player can only be on one team's squad at a time.</p>
-      <div class="team-select-bar" style="margin-bottom:14px;">
-        ${data.teams.map((t) => `
-          <button class="team-chip ${selectedSquadTeamId === t.id ? "active" : ""}" data-action="select-squad-team" data-team-id="${t.id}">
-            <span class="dot" style="background:${t.color};margin-right:0;"></span>${esc(t.name)}
-          </button>
-        `).join("")}
-      </div>
-      ${renderSquadBuilder()}
-    </div>
-
-    <div class="card">
-      <h2 class="card-title">Teams</h2>
-      ${data.teams.map((team) => `
-        <div class="manage-row">
-          <span style="display:flex;align-items:center;gap:8px;"><span class="dot" style="background:${team.color}"></span>${esc(team.name)}</span>
-          <button class="icon-btn" data-action="remove-team" data-team-id="${team.id}" aria-label="Remove ${esc(team.name)}">🗑</button>
-        </div>
-      `).join("")}
-      <div class="add-row">
-        <input class="input" id="new-team-name" placeholder="New team name" />
-        <input class="color-input" type="color" id="new-team-color" value="#3E7C59" aria-label="Team color" />
-        <button class="btn-primary-sm" data-action="add-team">+</button>
-      </div>
-    </div>
-
-    <div class="card">
-      <h2 class="card-title">Player list</h2>
-      <p class="muted">Everyone can see this list (with an Available/Unavailable filter) under the public "Player list" tab. Not tied to a team or cost here — when a manager signs one in the Squad builder, they set the auction price there.</p>
-      <div style="max-height:340px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;padding:0 10px;">
-        ${POSITIONS.map((pos) => {
-          const inPos = data.players.filter((p) => p.position === pos);
-          if (!inPos.length) return "";
-          return `
-            <div class="group-label">${pos} <span style="font-weight:400;">(${inPos.length})</span></div>
-            ${inPos.map((p) => {
-              const owner = findOwningTeam(data, p.id);
-              return `
-              <div class="manage-row">
-                <span>${esc(p.name)}${p.club ? ` <span class="muted" style="margin:0;font-size:12px;">· ${esc(p.club)}</span>` : ""}${owner ? ` <span class="muted" style="margin:0;font-size:12px;color:${owner.color};font-weight:700;">· Signed: ${esc(owner.name)}</span>` : ""}</span>
-                <button class="icon-btn" data-action="remove-player" data-player-id="${p.id}" aria-label="Remove ${esc(p.name)}">✕</button>
-              </div>
-            `;
-            }).join("")}
-          `;
-        }).join("")}
-      </div>
-      <div class="add-row">
-        <input class="input" id="new-player-name" placeholder="New player name" />
-        <select class="select" id="new-player-position" style="width:auto;">
-          ${POSITIONS.map((pos) => `<option value="${pos}" ${pos === newPlayerPosition ? "selected" : ""}>${pos}</option>`).join("")}
-        </select>
-        <input class="input" id="new-player-club" placeholder="Club (e.g. Arsenal)" style="width:140px;flex:none;" />
-        <button class="btn-primary-sm" data-action="add-player">+</button>
-      </div>
-    </div>
-
-    <div class="card">
-      <h2 class="card-title">Import from Excel</h2>
-      <p class="muted">Upload an .xlsx (or .csv) file with <strong>Player</strong>, <strong>Position</strong>, and <strong>Club</strong> columns to bulk-add to the player pool (no team or cost needed here — set the auction price when a manager signs the player in the Squad builder). Add columns named <strong>Week 1</strong>, <strong>Week 2</strong>, etc. to import points too. Matching an existing player by name updates it instead of duplicating it.</p>
-      <div style="display:flex;gap:10px;flex-wrap:wrap;">
-        <button class="btn-ghost" data-action="download-template">⬇ Download template</button>
-        <button class="btn-primary" data-action="trigger-import" ${importing ? "disabled" : ""}>⬆ ${importing ? "Importing…" : "Choose file to import"}</button>
-        <input type="file" id="import-file-input" accept=".xlsx,.xls,.csv" style="display:none;" />
-      </div>
-      ${importStatus ? `<div class="status-banner ${importStatus.type === "ok" ? "status-ok" : "status-error"}">${importStatus.type === "ok" ? "✓" : "⚠"} <span>${esc(importStatus.message)}</span></div>` : ""}
-    </div>
-
-    ${renderFixturesAdmin(weekOptions)}
-    ${renderTransfersAdmin(weekOptions)}
-    ${renderCupGamesAdmin()}
-    ${renderPrizesAdmin()}
-  `;
-}
-
-function renderFixturesAdmin(weekOptions) {
-  const fixtures = data.fixtures || [];
-  return `
-    <div class="card">
-      <h2 class="card-title">Fixtures</h2>
-      ${fixtures.map((f) => `
-        <div class="admin-mini-row">
-          <span>Wk ${f.week}: ${esc(teamNameById(f.homeTeamId))} vs ${esc(teamNameById(f.awayTeamId))}</span>
-          <div class="admin-mini-inputs">
-            <input class="score-mini-input" type="number" data-fixture-home="${f.id}" value="${f.homeScore ?? ""}" placeholder="-" />
-            <input class="score-mini-input" type="number" data-fixture-away="${f.id}" value="${f.awayScore ?? ""}" placeholder="-" />
-            <button class="icon-btn" data-action="save-fixture-score" data-fixture-id="${f.id}">💾</button>
-            <button class="icon-btn" data-action="remove-fixture" data-fixture-id="${f.id}">✕</button>
-          </div>
-        </div>
-      `).join("")}
-      <div class="add-row">
-        <select class="select" id="new-fixture-week" style="width:auto;">
-          ${weekOptions.map((w) => `<option value="${w}">Wk ${w}</option>`).join("")}
-        </select>
-        <select class="select" id="new-fixture-home" style="width:auto;">
-          ${data.teams.map((t) => `<option value="${t.id}">${esc(t.name)}</option>`).join("")}
-        </select>
-        <select class="select" id="new-fixture-away" style="width:auto;">
-          ${data.teams.map((t) => `<option value="${t.id}">${esc(t.name)}</option>`).join("")}
-        </select>
-        <button class="btn-primary-sm" data-action="add-fixture">+</button>
-      </div>
-    </div>
-  `;
-}
-
-function renderTransfersAdmin(weekOptions) {
-  const transfers = (data.transfers || []).slice().sort((a, b) => b.week - a.week);
-  return `
-    <div class="card">
-      <h2 class="card-title">Transfers</h2>
-      ${transfers.map((t) => `
-        <div class="admin-mini-row">
-          <span>Wk ${t.week} · ${esc(teamNameById(t.teamId))}: ${t.playerOut ? esc(t.playerOut) + " → " : ""}${esc(t.playerIn)}</span>
-          <button class="icon-btn" data-action="remove-transfer" data-transfer-id="${t.id}">✕</button>
-        </div>
-      `).join("")}
-      <div class="add-row">
-        <select class="select" id="new-transfer-week" style="width:auto;">
-          ${weekOptions.map((w) => `<option value="${w}">Wk ${w}</option>`).join("")}
-        </select>
-        <select class="select" id="new-transfer-team" style="width:auto;">
-          ${data.teams.map((t) => `<option value="${t.id}">${esc(t.name)}</option>`).join("")}
-        </select>
-        <input class="input" id="new-transfer-out" placeholder="Player out (optional)" style="width:120px;flex:none;" />
-        <input class="input" id="new-transfer-in" placeholder="Player in" style="width:120px;flex:none;" />
-        <button class="btn-primary-sm" data-action="add-transfer">+</button>
-      </div>
-    </div>
-  `;
-}
-
-function renderCupGamesAdmin() {
-  const games = data.cupGames || [];
-  return `
-    <div class="card">
-      <h2 class="card-title">Cup games</h2>
-      ${games.map((g) => `
-        <div class="admin-mini-row">
-          <span>${esc(g.round)}: ${esc(teamNameById(g.homeTeamId))} vs ${esc(teamNameById(g.awayTeamId))}</span>
-          <div class="admin-mini-inputs">
-            <input class="score-mini-input" type="number" data-cupgame-home="${g.id}" value="${g.homeScore ?? ""}" placeholder="-" />
-            <input class="score-mini-input" type="number" data-cupgame-away="${g.id}" value="${g.awayScore ?? ""}" placeholder="-" />
-            <button class="icon-btn" data-action="save-cupgame-score" data-cupgame-id="${g.id}">💾</button>
-            <button class="icon-btn" data-action="remove-cupgame" data-cupgame-id="${g.id}">✕</button>
-          </div>
-        </div>
-      `).join("")}
-      <div class="add-row">
-        <input class="input" id="new-cupgame-round" placeholder="Round (e.g. Semi-final)" style="width:140px;flex:none;" />
-        <select class="select" id="new-cupgame-home" style="width:auto;">
-          ${data.teams.map((t) => `<option value="${t.id}">${esc(t.name)}</option>`).join("")}
-        </select>
-        <select class="select" id="new-cupgame-away" style="width:auto;">
-          ${data.teams.map((t) => `<option value="${t.id}">${esc(t.name)}</option>`).join("")}
-        </select>
-        <button class="btn-primary-sm" data-action="add-cupgame">+</button>
-      </div>
-    </div>
-  `;
-}
-
-function renderPrizesAdmin() {
-  return `
-    <div class="card">
-      <h2 class="card-title">Prizes</h2>
-      <p class="muted">Free text — one line per prize works well.</p>
-      <textarea class="input" id="prizes-text-input" rows="5" style="resize:vertical;font-family:inherit;">${esc(data.prizesText || "")}</textarea>
-      <button class="btn-primary" style="margin-top:10px;" data-action="save-prizes">💾 Save prizes</button>
-    </div>
-  `;
-}
-
-// ---- Event binding ----
-function bindEvents() {
-  appEl.querySelectorAll("[data-action]").forEach((el) => {
-    el.addEventListener("click", handleAction);
-  });
-  const weekSelect = document.getElementById("score-week-select");
-  if (weekSelect) weekSelect.addEventListener("change", (e) => {
-    scoreWeek = Number(e.target.value);
-    render();
-  });
-  const importInput = document.getElementById("import-file-input");
-  if (importInput) importInput.addEventListener("change", handleImportFile);
-}
-
-function handleAction(e) {
-  const el = e.currentTarget;
-  const action = el.dataset.action;
-
-  if (action === "view-public") { view = "public"; render(); }
-  else if (action === "set-subview") { subView = el.dataset.subview; render(); }
-  else if (action === "select-team-view") { selectedTeamId = el.dataset.teamId; render(); }
-  else if (action === "set-player-filter") { playerListFilter = el.dataset.filter; render(); }
-  else if (action === "view-login") { view = "login"; loginError = ""; render(); }
-  else if (action === "exit-admin") { pauseSync = false; view = "public"; render(); }
-  else if (action === "select-week") {
-    selectedWeek = el.dataset.week === "" ? null : Number(el.dataset.week);
-    render();
-  }
-  else if (action === "toggle-team") {
-    const id = el.dataset.teamId;
-    expandedTeam = expandedTeam === id ? null : id;
-    expandedPlayer = null;
-    render();
-  }
-  else if (action === "toggle-player") {
-    const id = el.dataset.playerId;
-    expandedPlayer = expandedPlayer === id ? null : id;
-    render();
-  }
-  else if (action === "login-submit") {
-    const pw = document.getElementById("pw-input").value;
-    if (pw === ADMIN_PASSWORD) {
-      isAdmin = true;
-      sessionStorage.setItem("isAdmin", "true");
-      view = "admin";
-      pauseSync = true;
-      scoreWeek = data.currentWeek || 1;
-      loginError = "";
-    } else {
-      loginError = "Incorrect password.";
-    }
-    render();
-  }
-  else if (action === "save-scores") {
-    const scores = { ...data.scores };
-    appEl.querySelectorAll("[data-score-input]").forEach((input) => {
-      const playerId = input.dataset.playerId;
-      const raw = input.value;
-      const num = raw === "" ? 0 : Number(raw);
-      scores[playerId] = { ...(scores[playerId] || {}), [scoreWeek]: isNaN(num) ? 0 : num };
-      flashPulse(playerId);
-    });
-    persist({ ...data, scores });
-  }
-  else if (action === "save-league-settings") {
-    const nameInput = document.getElementById("league-name-input");
-    const weeksInput = document.getElementById("total-weeks-input");
-    const budgetInput = document.getElementById("budget-per-team-input");
-    const name = nameInput.value.trim();
-    const weeks = Math.max(1, Math.min(60, Number(weeksInput.value) || data.totalWeeks));
-    const budget = Math.max(0, Number(budgetInput.value) || 0);
-    if (!name) return;
-    persist({ ...data, leagueName: name, totalWeeks: weeks, budgetPerTeam: budget });
-  }
-  else if (action === "add-team") {
-    const nameInput = document.getElementById("new-team-name");
-    const colorInput = document.getElementById("new-team-color");
-    const name = nameInput.value.trim();
-    if (!name) return;
-    const next = { ...data, teams: [...data.teams, { id: uid("t"), name, color: colorInput.value }] };
-    persist(next);
-  }
-  else if (action === "remove-team") {
-    const teamId = el.dataset.teamId;
-    const next = {
-      ...data,
-      teams: data.teams.filter((t) => t.id !== teamId),
-      players: data.players.filter((p) => p.teamId !== teamId),
-    };
-    persist(next);
-  }
-  else if (action === "add-player") {
-    const nameInput = document.getElementById("new-player-name");
-    const posSelect = document.getElementById("new-player-position");
-    const clubInput = document.getElementById("new-player-club");
-    const name = nameInput.value.trim();
-    if (!name) return;
-    newPlayerPosition = posSelect.value;
-    const next = {
-      ...data,
-      players: [...data.players, {
-        id: uid("p"), name,
-        position: posSelect.value,
-        club: clubInput.value.trim(),
-      }],
-    };
-    persist(next);
-  }
-  else if (action === "remove-player") {
-    const playerId = el.dataset.playerId;
-    const scores = { ...data.scores };
-    delete scores[playerId];
-    const teams = data.teams.map((t) => Array.isArray(t.squad)
-      ? { ...t, squad: t.squad.filter((entry) => normalizeSquadEntry(entry).id !== playerId) }
-      : t);
-    persist({ ...data, players: data.players.filter((p) => p.id !== playerId), scores, teams });
-  }
-  else if (action === "select-squad-team") {
-    selectedSquadTeamId = el.dataset.teamId;
-    render();
-  }
-  else if (action === "set-formation") {
-    if (!selectedSquadTeamId) return;
-    const formation = el.dataset.formation;
-    const teams = data.teams.map((t) => t.id === selectedSquadTeamId ? { ...t, formation } : t);
-    persist({ ...data, teams });
-  }
-  else if (action === "save-squad") {
-    if (!selectedSquadTeamId) return;
-    const selects = appEl.querySelectorAll(".squad-slot");
-    const costInputs = appEl.querySelectorAll(".squad-slot-cost");
-    const chosen = [];
-    let duplicate = false;
-    selects.forEach((sel, i) => {
-      if (sel.value) {
-        if (chosen.some((c) => c.id === sel.value)) duplicate = true;
-        const rawCost = costInputs[i] ? costInputs[i].value : "";
-        const cost = rawCost === "" ? 0 : Number(rawCost);
-        chosen.push({ id: sel.value, cost: isNaN(cost) ? 0 : cost });
-      }
-    });
-    if (duplicate) {
-      saveError = "The same player is selected in more than one slot — fix that before saving.";
-      render();
-      return;
-    }
-    const teams = data.teams.map((t) => t.id === selectedSquadTeamId ? { ...t, squad: chosen } : t);
-    persist({ ...data, teams });
-  }
-  else if (action === "download-template") {
-    downloadTemplate();
-  }
-  else if (action === "trigger-import") {
-    document.getElementById("import-file-input").click();
-  }
-  else if (action === "add-fixture") {
-    const week = Number(document.getElementById("new-fixture-week").value);
-    const homeTeamId = document.getElementById("new-fixture-home").value;
-    const awayTeamId = document.getElementById("new-fixture-away").value;
-    if (!homeTeamId || !awayTeamId || homeTeamId === awayTeamId) return;
-    const fixtures = [...(data.fixtures || []), { id: uid("f"), week, homeTeamId, awayTeamId, homeScore: null, awayScore: null }];
-    persist({ ...data, fixtures });
-  }
-  else if (action === "remove-fixture") {
-    const id = el.dataset.fixtureId;
-    persist({ ...data, fixtures: (data.fixtures || []).filter((f) => f.id !== id) });
-  }
-  else if (action === "save-fixture-score") {
-    const id = el.dataset.fixtureId;
-    const homeInput = appEl.querySelector(`[data-fixture-home="${id}"]`);
-    const awayInput = appEl.querySelector(`[data-fixture-away="${id}"]`);
-    const homeScore = homeInput.value === "" ? null : Number(homeInput.value);
-    const awayScore = awayInput.value === "" ? null : Number(awayInput.value);
-    const fixtures = (data.fixtures || []).map((f) => f.id === id ? { ...f, homeScore, awayScore } : f);
-    persist({ ...data, fixtures });
-  }
-  else if (action === "add-transfer") {
-    const week = Number(document.getElementById("new-transfer-week").value);
-    const teamId = document.getElementById("new-transfer-team").value;
-    const playerOut = document.getElementById("new-transfer-out").value.trim();
-    const playerIn = document.getElementById("new-transfer-in").value.trim();
-    if (!teamId || !playerIn) return;
-    const transfers = [...(data.transfers || []), { id: uid("tr"), week, teamId, playerOut, playerIn }];
-    persist({ ...data, transfers });
-  }
-  else if (action === "remove-transfer") {
-    const id = el.dataset.transferId;
-    persist({ ...data, transfers: (data.transfers || []).filter((t) => t.id !== id) });
-  }
-  else if (action === "add-cupgame") {
-    const round = document.getElementById("new-cupgame-round").value.trim();
-    const homeTeamId = document.getElementById("new-cupgame-home").value;
-    const awayTeamId = document.getElementById("new-cupgame-away").value;
-    if (!round || !homeTeamId || !awayTeamId || homeTeamId === awayTeamId) return;
-    const cupGames = [...(data.cupGames || []), { id: uid("c"), round, homeTeamId, awayTeamId, homeScore: null, awayScore: null }];
-    persist({ ...data, cupGames });
-  }
-  else if (action === "remove-cupgame") {
-    const id = el.dataset.cupgameId;
-    persist({ ...data, cupGames: (data.cupGames || []).filter((g) => g.id !== id) });
-  }
-  else if (action === "save-cupgame-score") {
-    const id = el.dataset.cupgameId;
-    const homeInput = appEl.querySelector(`[data-cupgame-home="${id}"]`);
-    const awayInput = appEl.querySelector(`[data-cupgame-away="${id}"]`);
-    const homeScore = homeInput.value === "" ? null : Number(homeInput.value);
-    const awayScore = awayInput.value === "" ? null : Number(awayInput.value);
-    const cupGames = (data.cupGames || []).map((g) => g.id === id ? { ...g, homeScore, awayScore } : g);
-    persist({ ...data, cupGames });
-  }
-  else if (action === "save-prizes") {
-    const text = document.getElementById("prizes-text-input").value;
-    persist({ ...data, prizesText: text });
-  }
-}
-
-function downloadTemplate() {
-  const headers = ["Player", "Position", "Club", "Week 1", "Week 2", "Week 3"];
-  const sample = [
-    ["J. Okafor", "FWD", "Arsenal", 14, 9, 11],
-    ["M. Reyes", "MID", "Chelsea", 7, 11, 8],
-    ["S. Kowalski", "GK", "Man City", 12, 12, 10],
-  ];
-  const ws = XLSX.utils.aoa_to_sheet([headers, ...sample]);
-  ws["!cols"] = [{ wch: 18 }, { wch: 10 }, { wch: 14 }, { wch: 8 }, { wch: 8 }, { wch: 8 }];
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "Player pool");
-  XLSX.writeFile(wb, "player-pool-import-template.xlsx");
-}
-
-function handleImportFile(e) {
-  const file = e.target.files && e.target.files[0];
-  if (!file) return;
-  importing = true;
-  importStatus = null;
-  render();
-
-  const reader = new FileReader();
-  reader.onload = (evt) => {
-    try {
-      const wb = XLSX.read(evt.target.result, { type: "array" });
-      const sheet = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
-      if (!rows.length) {
-        importStatus = { type: "error", message: "That file doesn't have any rows to import." };
-        importing = false;
-        render();
-        return;
-      }
-      const keys = Object.keys(rows[0]);
-      const findKey = (target) => keys.find((k) => k.trim().toLowerCase() === target);
-      const playerKey = findKey("player") || findKey("name");
-      const posKey = findKey("position") || findKey("pos");
-      const clubKey = findKey("club") || findKey("real team") || findKey("realteam");
-      const weekKeys = keys.filter((k) => /^week\s*\d+$/i.test(k.trim()));
-
-      if (!playerKey) {
-        importStatus = { type: "error", message: "Couldn't find a 'Player' column. Use the template for the right headers." };
-        importing = false;
-        render();
-        return;
-      }
-
-      let players = [...data.players];
-      let scores = { ...data.scores };
-      let playersAdded = 0, playersUpdated = 0;
-
-      rows.forEach((row) => {
-        const playerName = String(row[playerKey] || "").trim();
-        if (!playerName) return;
-
-        let position = posKey ? String(row[posKey] || "").trim().toUpperCase() : "";
-        if (!POSITIONS.includes(position)) position = "MID";
-
-        const club = clubKey ? String(row[clubKey] || "").trim() : "";
-
-        let player = players.find((p) => p.name.toLowerCase() === playerName.toLowerCase());
-        if (!player) {
-          player = { id: uid("p"), name: playerName, position, club };
-          players.push(player);
-          playersAdded++;
-        } else {
-          player.position = position;
-          if (clubKey) player.club = club;
-          playersUpdated++;
-        }
-
-        weekKeys.forEach((wk) => {
-          const weekNum = parseInt(wk.match(/\d+/)[0], 10);
-          const raw = row[wk];
-          if (raw === "" || raw === null || raw === undefined) return;
-          const num = Number(raw);
-          if (isNaN(num)) return;
-          scores[player.id] = { ...(scores[player.id] || {}), [weekNum]: num };
-        });
-      });
-
-      const maxWeekFromFile = weekKeys.reduce((max, wk) => Math.max(max, parseInt(wk.match(/\d+/)[0], 10)), 0);
-
-      const next = { ...data, players, scores, totalWeeks: Math.max(data.totalWeeks, maxWeekFromFile) };
-      persist(next);
-      importStatus = {
-        type: "ok",
-        message: `Imported: ${playersAdded} new player${playersAdded === 1 ? "" : "s"}${playersUpdated ? `, ${playersUpdated} player${playersUpdated === 1 ? "" : "s"} updated` : ""}. Assign them to squads in the Squad builder above.`,
-      };
-    } catch (err) {
-      importStatus = { type: "error", message: "Couldn't read that file. Make sure it's a .xlsx or .csv export." };
-    } finally {
-      importing = false;
-      const input = document.getElementById("import-file-input");
-      if (input) input.value = "";
-      render();
-    }
-  };
-  reader.readAsArrayBuffer(file);
-}
-
-// Restore admin session if the tab already signed in
-if (isAdmin) { view = "admin"; pauseSync = true; scoreWeek = 1; }
-</script>
-</body>
-</html>
+  const cls = ["tile", small ? "small" : "", leader ? "leader" : "", pulse ? "pu
