@@ -1,0 +1,12 @@
+{
+  "name": "Fantasy Football",
+  "short_name": "Fantasy Football",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#FAF6EE",
+  "theme_color": "#234D35",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
