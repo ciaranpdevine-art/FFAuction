@@ -54,7 +54,13 @@ async function fetchCsv(path) {
 }
 
 function norm(s) {
-  return String(s || "").trim().toLowerCase();
+  // Strips accents (Ünal -> Unal, Sánchez -> Sanchez, Jörgensen -> Jorgensen)
+  // so the name+club fallback match isn't defeated by diacritics alone.
+  return String(s || "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "");
 }
 
 async function main() {
