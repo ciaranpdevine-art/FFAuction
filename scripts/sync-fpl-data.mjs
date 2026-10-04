@@ -27,14 +27,19 @@
  * run's log — nothing is guessed.
  *
  * Matching a source fixture to one of your existing fixtures: week + home
- * club + away club, ignoring case and accents, same as the player fallback.
- * Only Premier League fixtures are used (the source also includes cup and
- * European games). A fixture's score is only ever written if a fixture with
- * that week/home/away already exists in your fixtures list — this never
- * creates new fixtures, only fills in results for ones you've already
- * imported. If club names don't line up (e.g. source says "Man Utd" but
- * your fixtures say "Manchester United"), use Admin → Fixtures → "Fix a
- * club name across all fixtures" to align them.
+ * club + away club. The source uses its own short club names ("Spurs",
+ * "Man Utd", "Nott'm Forest"), which usually don't match however your
+ * fixtures spell them — so instead of relying on the source's names
+ * directly, this script first figures out, for each source club, what YOUR
+ * spelling of that club is: it looks at the players from that club it just
+ * matched via External ID (reliable regardless of spelling) and uses their
+ * `club` field as the real name. That mapping is then used to match
+ * fixtures, so it stays correct automatically even if your spelling style
+ * changes. Only Premier League fixtures are used (the source also includes
+ * cup and European games). A fixture's score is only ever written if a
+ * fixture with that week/home/away already exists in your fixtures list —
+ * this never creates new fixtures, only fills in results for ones you've
+ * already imported.
  *
  * Update SOURCE_SEASON below once a year when the new season's folder
  * appears in the source repo (e.g. "2027-2028").
@@ -44,8 +49,6 @@ import { initializeApp } from "firebase/app";
 import { getFirestore, doc, getDoc, collection, getDocs, writeBatch } from "firebase/firestore";
 import { parse } from "csv-parse/sync";
 
-// Same public config already embedded in index.html — these are client
-// identifiers, not secrets; Firestore access is controlled by its rules.
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyCZ7vU_cwoJq1rKM1RZK0fwviyaEmCwxyU",
   authDomain: "fantasy-football-auction-9a665.firebaseapp.com",
@@ -55,7 +58,7 @@ const FIREBASE_CONFIG = {
   appId: "1:377336547547:web:fdfc886c321ea340a964fe",
 };
 
-const SOURCE_SEASON = "2026-2027"; // update each July when the new season folder appears
+const SOURCE_SEASON = "2026-2027";
 const SOURCE_RAW_BASE = `https://raw.githubusercontent.com/olbauday/FPL-Core-Insights/main/data/${SOURCE_SEASON}`;
 
 async function fetchCsv(path) {
@@ -67,8 +70,6 @@ async function fetchCsv(path) {
 }
 
 function norm(s) {
-  // Case- and accent-insensitive (Ünal -> unal, Sánchez -> sanchez) so
-  // matching isn't defeated by diacritics alone.
   return String(s || "")
     .trim()
     .toLowerCase()
@@ -77,8 +78,6 @@ function norm(s) {
 }
 
 function teamCodeToString(raw) {
-  // Source CSVs export team codes as floats ("43.0") — normalize to match
-  // teams.csv's plain-integer "code" column.
   const n = Number(raw);
   return Number.isFinite(n) ? String(Math.trunc(n)) : null;
 }
@@ -86,7 +85,6 @@ function teamCodeToString(raw) {
 async function main() {
   console.log(`Season folder: ${SOURCE_SEASON}`);
 
-  // 1. Which gameweeks are finished and ready to sync.
   const summaries = await fetchCsv("gameweek_summaries.csv");
   const finishedWeeks = summaries
     .filter((row) => norm(row.finished) === "true")
@@ -99,10 +97,8 @@ async function main() {
     return;
   }
 
-  // 2. Season player/club lookup, used for the name+club fallback match and
-  // for resolving fixtures' numeric team codes to club names.
-  const sourcePlayers = await fetchCsv("players.csv"); // player_code,player_id,first_name,second_name,web_name,team_code,position
-  const sourceTeams = await fetchCsv("teams.csv"); // code,id,name,short_name,...
+  const sourcePlayers = await fetchCsv("players.csv");
+  const sourceTeams = await fetchCsv("teams.csv");
   const clubNameByTeamCode = {};
   sourceTeams.forEach((t) => { clubNameByTeamCode[t.code] = t.name; });
   const sourcePlayerById = {};
@@ -114,7 +110,6 @@ async function main() {
     };
   });
 
-  // 3. Connect to Firestore and load current state.
   const app = initializeApp(FIREBASE_CONFIG);
   const db = getFirestore(app);
   const mainRef = doc(db, "league", "main");
@@ -142,11 +137,35 @@ async function main() {
     return { player: null };
   }
 
+  // Figure out, for each of the source's own club names, what your fixtures
+  // actually call that club — derived from players we just matched via
+  // External ID (reliable no matter how club names are spelled), not from
+  // the source's own naming. Majority vote per source club in case of a
+  // stray mismatch.
+  const clubNameVotes = {};
+  sourcePlayers.forEach((p) => {
+    const { player, matchedBy } = matchPlayer(p.player_id);
+    if (!player || matchedBy !== "id") return;
+    const sourceClub = clubNameByTeamCode[p.team_code] || "";
+    if (!sourceClub) return;
+    clubNameVotes[sourceClub] = clubNameVotes[sourceClub] || {};
+    clubNameVotes[sourceClub][player.club] = (clubNameVotes[sourceClub][player.club] || 0) + 1;
+  });
+  const resolvedClubName = {};
+  Object.entries(clubNameVotes).forEach(([sourceClub, counts]) => {
+    let best = null, bestCount = 0;
+    Object.entries(counts).forEach(([appClub, c]) => { if (c > bestCount) { best = appClub; bestCount = c; } });
+    resolvedClubName[sourceClub] = best || sourceClub;
+  });
+  const renamed = Object.entries(resolvedClubName).filter(([src, app]) => norm(src) !== norm(app));
+  if (renamed.length) {
+    console.log("Resolved club-name spelling from matched players:");
+    renamed.forEach(([src, app]) => console.log(`  - "${src}" (source) → "${app}" (yours)`));
+  }
+
   const fixtureIndex = {};
   fixtures.forEach((f, i) => { fixtureIndex[`${f.week}|${norm(f.homeClub)}|${norm(f.awayClub)}`] = i; });
 
-  // 4. Pull each finished week's player stats, writing straight to its week
-  // document, preserving any existing entries this source didn't match.
   const weeksColRef = collection(db, "league", "main", "weeks");
   const existingWeeksSnap = await getDocs(weeksColRef);
   const existingWeeks = {};
@@ -160,7 +179,6 @@ async function main() {
   const unmatchedFixturesSample = [];
 
   for (const week of finishedWeeks) {
-    // --- Player points & stats for this week ---
     let statRows;
     try {
       statRows = await fetchCsv(`By Gameweek/GW${week}/player_gameweek_stats.csv`);
@@ -210,7 +228,6 @@ async function main() {
       console.log(`Week ${week}: no stat rows yet, skipping stats for this week.`);
     }
 
-    // --- Match results for this week ---
     let matchRows;
     try {
       matchRows = await fetchCsv(`By Gameweek/GW${week}/matches.csv`);
@@ -221,8 +238,10 @@ async function main() {
     const premMatches = matchRows.filter((r) => norm(r.tournament) === "prem" && norm(r.finished) === "true");
     let weekFixturesUpdated = 0, weekFixturesUnmatched = 0;
     premMatches.forEach((r) => {
-      const homeClub = clubNameByTeamCode[teamCodeToString(r.home_team)];
-      const awayClub = clubNameByTeamCode[teamCodeToString(r.away_team)];
+      const rawHome = clubNameByTeamCode[teamCodeToString(r.home_team)];
+      const rawAway = clubNameByTeamCode[teamCodeToString(r.away_team)];
+      const homeClub = resolvedClubName[rawHome] || rawHome;
+      const awayClub = resolvedClubName[rawAway] || rawAway;
       if (!homeClub || !awayClub || r.home_score === "" || r.away_score === "") return;
       const key = `${week}|${norm(homeClub)}|${norm(awayClub)}`;
       const idx = fixtureIndex[key];
@@ -264,7 +283,7 @@ async function main() {
   if (unmatchedFixturesSample.length) {
     console.log(`\n${fixturesUnmatched} fixture result(s) couldn't be matched to an existing fixture. Sample:`);
     unmatchedFixturesSample.forEach((line) => console.log(`  - ${line}`));
-    console.log("If these look like real mismatches (not just games not in your fixture list), check club-name spelling via Admin → Fixtures → \"Fix a club name across all fixtures\".");
+    console.log("If these look like real mismatches (not just games not in your fixture list), check that fixture's homeClub/awayClub spelling in your app, or that the fixture exists at all for that week.");
   }
 }
 
