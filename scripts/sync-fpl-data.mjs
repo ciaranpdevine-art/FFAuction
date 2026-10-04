@@ -1,7 +1,7 @@
 /**
- * FPL auto-sync — pulls finished-gameweek data from the public "FPL Core
- * Insights" dataset (github.com/olbauday/FPL-Core-Insights) and writes it
- * straight into this league's Firestore:
+ * FPL auto-sync — pulls gameweek data from the public "FPL Core Insights"
+ * dataset (github.com/olbauday/FPL-Core-Insights) and writes it straight
+ * into this league's Firestore:
  *   1. Player points & stats -> league/main/weeks/{week} (scores, playerStats)
  *      — exactly what "Import weekly points & stats" writes.
  *   2. Match results (home/away score) -> league/main's fixtures array
@@ -9,11 +9,24 @@
  * Everything for a run is written in a single atomic Firestore batch: it
  * either all commits or none of it does.
  *
- * Run by the GitHub workflow .github/workflows/sync-fpl-data.yml on a daily
- * schedule (and on-demand via "Run workflow" in the Actions tab). Needs no
- * secrets: this project's Firestore rules already allow open writes (the
- * same public config already embedded in index.html is used here), matching
- * how the app itself saves data from any visitor's browser.
+ * Syncs LIVE, mid-gameweek, not just once a gameweek is fully finished: any
+ * gameweek whose squad-selection deadline has already passed is synced every
+ * run, whatever state it's in. The source's own player-stats and match files
+ * for a gameweek only ever contain rows for teams that have already played,
+ * same as the CSV you were importing by hand — rows for players/fixtures
+ * that haven't played yet simply aren't written at all (never zeroed), so a
+ * player or fixture only gets an entry once their match has actually
+ * happened, and "left to play" stays accurate throughout the weekend. Each
+ * run just overwrites with whatever the source currently has (matching how
+ * provisional bonus points can tick up for an hour or so after a match
+ * before being confirmed — the next run corrects it automatically).
+ *
+ * Run by the GitHub workflow .github/workflows/sync-fpl-data.yml on a
+ * schedule (and on-demand via "Run workflow" in the Actions tab) — matched
+ * to the source's own twice-daily refresh. Needs no secrets: this project's
+ * Firestore rules already allow open writes (the same public config already
+ * embedded in index.html is used here), matching how the app itself saves
+ * data from any visitor's browser.
  *
  * Matching a source player to one of your pool players (same logic as the
  * app's own import tools):
@@ -86,13 +99,26 @@ async function main() {
   console.log(`Season folder: ${SOURCE_SEASON}`);
 
   const summaries = await fetchCsv("gameweek_summaries.csv");
-  const finishedWeeks = summaries
-    .filter((row) => norm(row.finished) === "true")
+  const nowEpoch = Math.floor(Date.now() / 1000);
+  // Any gameweek whose deadline has passed has started (or finished) — sync
+  // it regardless of whether the source has marked the whole round
+  // "finished" yet, so in-progress gameweeks get live partial updates.
+  const weeksToSync = summaries
+    .filter((row) => {
+      const id = Number(row.id);
+      const deadline = Number(row.deadline_time_epoch);
+      return Number.isFinite(id) && id > 0 && Number.isFinite(deadline) && deadline <= nowEpoch;
+    })
     .map((row) => Number(row.id))
-    .filter((n) => Number.isFinite(n) && n > 0)
     .sort((a, b) => a - b);
-  console.log(`Finished gameweeks in source: ${finishedWeeks.join(", ") || "(none yet)"}`);
-  if (!finishedWeeks.length) {
+  const finishedFlagById = {};
+  summaries.forEach((row) => { finishedFlagById[Number(row.id)] = norm(row.finished) === "true"; });
+  console.log(
+    `Gameweeks to sync: ${weeksToSync.join(", ") || "(none yet)"} ` +
+      `(${weeksToSync.filter((w) => finishedFlagById[w]).length} fully finished, ` +
+      `${weeksToSync.filter((w) => !finishedFlagById[w]).length} still in progress)`
+  );
+  if (!weeksToSync.length) {
     console.log("Nothing to sync yet this season.");
     return;
   }
@@ -178,7 +204,7 @@ async function main() {
   let fixturesUpdated = 0, fixturesUnmatched = 0;
   const unmatchedFixturesSample = [];
 
-  for (const week of finishedWeeks) {
+  for (const week of weeksToSync) {
     let statRows;
     try {
       statRows = await fetchCsv(`By Gameweek/GW${week}/player_gameweek_stats.csv`);
@@ -223,9 +249,10 @@ async function main() {
       weeksWritten++;
       totalMatched += matched;
       totalUnmatched += unmatched;
-      console.log(`Week ${week}: stats — ${matched} matched, ${unmatched} unmatched.`);
+      const tag = finishedFlagById[week] ? "" : " (in progress)";
+      console.log(`Week ${week}${tag}: stats — ${matched} matched, ${unmatched} unmatched.`);
     } else {
-      console.log(`Week ${week}: no stat rows yet, skipping stats for this week.`);
+      console.log(`Week ${week}: no stat rows yet (hasn't kicked off in the source), skipping stats for this week.`);
     }
 
     let matchRows;
@@ -260,7 +287,8 @@ async function main() {
     fixturesUpdated += weekFixturesUpdated;
     fixturesUnmatched += weekFixturesUnmatched;
     if (premMatches.length) {
-      console.log(`Week ${week}: results — ${weekFixturesUpdated} updated, ${weekFixturesUnmatched} unmatched (of ${premMatches.length} finished PL matches).`);
+      const tag = finishedFlagById[week] ? "" : " (in progress)";
+      console.log(`Week ${week}${tag}: results — ${weekFixturesUpdated} updated, ${weekFixturesUnmatched} unmatched (of ${premMatches.length} finished PL matches so far).`);
     }
   }
 
