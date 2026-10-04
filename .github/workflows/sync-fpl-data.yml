@@ -2,8 +2,11 @@ name: Sync FPL data
 
 on:
   schedule:
-    # 08:00 UTC daily — after the source dataset's own 07:30 UTC refresh.
-    - cron: "0 8 * * *"
+    # Twice daily, shortly after the source dataset's own two daily
+    # refreshes (07:30 and 17:30 UTC) — matches the cadence you were using
+    # for manual imports.
+    - cron: "40 7 * * *"
+    - cron: "40 17 * * *"
   workflow_dispatch: {} # lets you trigger a run manually from the Actions tab
 
 jobs:
