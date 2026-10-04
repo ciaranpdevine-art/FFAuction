@@ -1,0 +1,25 @@
+name: Sync FPL data
+
+on:
+  schedule:
+    # 08:00 UTC daily — after the source dataset's own 07:30 UTC refresh.
+    - cron: "0 8 * * *"
+  workflow_dispatch: {} # lets you trigger a run manually from the Actions tab
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        working-directory: scripts
+        run: npm install
+
+      - name: Run sync
+        working-directory: scripts
+        run: node sync-fpl-data.mjs
