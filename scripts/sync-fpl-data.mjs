@@ -189,6 +189,33 @@ async function main() {
     renamed.forEach(([src, app]) => console.log(`  - "${src}" (source) → "${app}" (yours)`));
   }
 
+  // Fill in any missing player photo codes (the number the player photos are
+  // keyed on) straight from the source, using the External ID match. Only
+  // fills blanks — never overwrites a code you've set yourself — so players
+  // who transfer mid-season or were missed by the photo-code import get their
+  // photo automatically.
+  const updatedPlayers = players.map((p) => ({ ...p }));
+  const updatedPlayerById = {};
+  updatedPlayers.forEach((p) => { updatedPlayerById[p.id] = p; });
+  let photoCodesFilled = 0;
+  const photoCodeSample = [];
+  sourcePlayers.forEach((sp) => {
+    const code = String(sp.player_code || "").trim();
+    if (!code) return;
+    const { player, matchedBy } = matchPlayer(sp.player_id);
+    if (!player || matchedBy !== "id") return;
+    const target = updatedPlayerById[player.id];
+    if (target && !String(target.playerCode || "").trim()) {
+      target.playerCode = code;
+      photoCodesFilled++;
+      if (photoCodeSample.length < 20) photoCodeSample.push(`${target.name} (${target.club}) -> ${code}`);
+    }
+  });
+  if (photoCodesFilled) {
+    console.log(`Photo codes filled in for ${photoCodesFilled} player(s):`);
+    photoCodeSample.forEach((line) => console.log(`  - ${line}`));
+  }
+
   const fixtureIndex = {};
   fixtures.forEach((f, i) => { fixtureIndex[`${f.week}|${norm(f.homeClub)}|${norm(f.awayClub)}`] = i; });
 
@@ -330,17 +357,17 @@ async function main() {
     }
   }
 
-  if (fixturesUpdated > 0) {
-    batch.set(mainRef, { ...mainData, fixtures });
+  if (fixturesUpdated > 0 || photoCodesFilled > 0) {
+    batch.set(mainRef, { ...mainData, players: updatedPlayers, fixtures });
   }
 
-  if (weeksWritten === 0 && fixturesUpdated === 0) {
+  if (weeksWritten === 0 && fixturesUpdated === 0 && photoCodesFilled === 0) {
     console.log("Nothing new to write.");
     return;
   }
 
   await batch.commit();
-  console.log(`\nDone — wrote ${weeksWritten} week document(s), updated ${fixturesUpdated} fixture result(s).`);
+  console.log(`\nDone — wrote ${weeksWritten} week document(s), updated ${fixturesUpdated} fixture result(s), filled ${photoCodesFilled} photo code(s).`);
   console.log(`Player stats: ${totalMatched} matched total, ${totalUnmatched} unmatched total.`);
   if (unmatchedPlayersSample.length) {
     console.log("\nSample of unmatched players (add their External ID in Admin → Players to fix):");
