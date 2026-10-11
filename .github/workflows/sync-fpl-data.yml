@@ -2,11 +2,13 @@ name: Sync FPL data
 
 on:
   schedule:
-    # Twice daily, shortly after the source dataset's own two daily
-    # refreshes (07:30 and 17:30 UTC) — matches the cadence you were using
-    # for manual imports.
-    - cron: "40 7 * * *"
-    - cron: "40 17 * * *"
+    # Overnight, once the day's games are all finished (cron times are UTC):
+    # 23:30 UTC = just after midnight UK time while clocks are on BST
+    # (late March - late October), 23:30 UK time otherwise. The second run
+    # is a safety net after the source's early-morning refresh in case the
+    # first is delayed or skipped by GitHub.
+    - cron: "30 23 * * *"
+    - cron: "30 4 * * *"
   workflow_dispatch: {} # lets you trigger a run manually from the Actions tab
 
 jobs:
