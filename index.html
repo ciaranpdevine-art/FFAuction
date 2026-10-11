@@ -225,7 +225,7 @@ const FIREBASE_CONFIG = {
 };
 
 const ADMIN_PASSWORD_FALLBACK = "zxcvb"; // used until an admin sets a custom one
-const BUILD_NUMBER = "150"; // bump this by 1 every time a new file is handed over
+const BUILD_NUMBER = "151"; // bump this by 1 every time a new file is handed over
 
 let initializeApp, getFirestore, doc, setDoc, getDoc, onSnapshot, collection, writeBatch;
 try {
@@ -2220,7 +2220,7 @@ function renderTable(teamTotals) {
               <span class="rank-num" style="color:${isLeader ? "#D4A537" : "#17241B"}">${i + 1}</span>
               <span class="team-name-cell">
                 
-                <span style="${isLeader ? "color:#D4A537;font-weight:700;" : ""}">${isLeader ? "⭐&nbsp;" : ""}${isLast ? "💩&nbsp;" : ""}${esc(team.name)}${isLeader ? "&nbsp;⭐" : ""}${isLast ? "&nbsp;💩" : ""}</span>
+                <span style="${isLeader ? "color:#D4A537;font-weight:700;" : ""}">${esc(team.name)}</span>
                 <span class="chev">${isOpen ? "▲" : "▼"}</span>
               </span>
               <span style="display:flex;justify-content:flex-end">${scoreTile(team.total, false, isLeader, false)}</span>
