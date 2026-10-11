@@ -9,17 +9,16 @@
  * Everything for a run is written in a single atomic Firestore batch: it
  * either all commits or none of it does.
  *
- * Syncs LIVE, mid-gameweek, not just once a gameweek is fully finished: any
- * gameweek whose squad-selection deadline has already passed is synced every
- * run, whatever state it's in. The source's own player-stats and match files
- * for a gameweek only ever contain rows for teams that have already played,
- * same as the CSV you were importing by hand — rows for players/fixtures
- * that haven't played yet simply aren't written at all (never zeroed), so a
- * player or fixture only gets an entry once their match has actually
- * happened, and "left to play" stays accurate throughout the weekend. Each
- * run just overwrites with whatever the source currently has (matching how
- * provisional bonus points can tick up for an hour or so after a match
- * before being confirmed — the next run corrects it automatically).
+ * Syncs mid-gameweek, not just once a gameweek is fully finished: any
+ * gameweek whose squad-selection deadline has already passed is checked every
+ * run. But a player's points/stats are only written once ALL of their team's
+ * Premier League games that week are finished. The source lists every player
+ * every week (0 minutes for teams yet to play, partial live numbers mid-
+ * match), so writing them early would show unplayed players as "played, 0
+ * points" and break "players yet to play". Players whose team hasn't
+ * finished get nothing written, and any earlier partial/zero entry for them
+ * is removed. Each run overwrites finished players with the source's latest
+ * numbers, so late bonus-point changes are picked up automatically.
  *
  * Run by the GitHub workflow .github/workflows/sync-fpl-data.yml on a
  * schedule (and on-demand via "Run workflow" in the Actions tab) — matched
@@ -133,6 +132,7 @@ async function main() {
       webName: p.web_name,
       fullName: `${p.first_name} ${p.second_name}`.trim(),
       club: clubNameByTeamCode[p.team_code] || "",
+      teamCode: teamCodeToString(p.team_code),
     };
   });
 
@@ -205,6 +205,37 @@ async function main() {
   const unmatchedFixturesSample = [];
 
   for (const week of weeksToSync) {
+    // Match results first: they tell us which teams' games are actually over.
+    let matchRows = null;
+    try {
+      matchRows = await fetchCsv(`By Gameweek/GW${week}/matches.csv`);
+    } catch (e) {
+      console.log(`Week ${week}: couldn't fetch match results (${e.message}), skipping this week entirely.`);
+      continue;
+    }
+
+    // A team's players only get points/stats written once ALL of that team's
+    // Premier League games this week are finished. The source lists every
+    // player each week (0 minutes for teams yet to play, partial live stats
+    // mid-match), so writing them early would show unplayed players as
+    // "played, 0 points" and break "yet to play".
+    const teamMatchStatus = {}; // team code -> { total, finished }
+    matchRows
+      .filter((r) => norm(r.tournament) === "prem")
+      .forEach((r) => {
+        const done = norm(r.finished) === "true";
+        [teamCodeToString(r.home_team), teamCodeToString(r.away_team)].forEach((code) => {
+          if (!code) return;
+          teamMatchStatus[code] = teamMatchStatus[code] || { total: 0, finished: 0 };
+          teamMatchStatus[code].total++;
+          if (done) teamMatchStatus[code].finished++;
+        });
+      });
+    const teamReady = (code) => {
+      const st = teamMatchStatus[code];
+      return !!st && st.total > 0 && st.finished === st.total;
+    };
+
     let statRows;
     try {
       statRows = await fetchCsv(`By Gameweek/GW${week}/player_gameweek_stats.csv`);
@@ -217,14 +248,28 @@ async function main() {
       const existing = existingWeeks[String(week)] || { scores: {}, playerStats: {} };
       const scores = { ...(existing.scores || {}) };
       const playerStats = { ...(existing.playerStats || {}) };
-      let matched = 0, unmatched = 0;
+      let matched = 0, unmatched = 0, notFinished = 0, cleared = 0;
 
       statRows.forEach((row) => {
+        const info = sourcePlayerById[row.id];
+        const ready = info ? teamReady(info.teamCode) : false;
         const { player } = matchPlayer(row.id);
+        if (!ready) {
+          // Their game isn't over (or they have no fixture): write nothing,
+          // and remove any earlier partial/zero entry so they show as yet to play.
+          if (player) {
+            notFinished++;
+            if (scores[player.id] !== undefined || playerStats[player.id] !== undefined) {
+              delete scores[player.id];
+              delete playerStats[player.id];
+              cleared++;
+            }
+          }
+          return;
+        }
         if (!player) {
           unmatched++;
           if (unmatchedPlayersSample.length < 25) {
-            const info = sourcePlayerById[row.id];
             unmatchedPlayersSample.push(`Week ${week}: ${info ? `${info.webName} (${info.club})` : `FPL id ${row.id}`}`);
           }
           return;
@@ -250,18 +295,11 @@ async function main() {
       totalMatched += matched;
       totalUnmatched += unmatched;
       const tag = finishedFlagById[week] ? "" : " (in progress)";
-      console.log(`Week ${week}${tag}: stats — ${matched} matched, ${unmatched} unmatched.`);
+      console.log(`Week ${week}${tag}: stats — ${matched} written, ${unmatched} unmatched, ${notFinished} of your players still to play (${cleared} stale entries cleared).`);
     } else {
       console.log(`Week ${week}: no stat rows yet (hasn't kicked off in the source), skipping stats for this week.`);
     }
 
-    let matchRows;
-    try {
-      matchRows = await fetchCsv(`By Gameweek/GW${week}/matches.csv`);
-    } catch (e) {
-      console.log(`Week ${week}: couldn't fetch match results (${e.message}), skipping results for this week.`);
-      continue;
-    }
     const premMatches = matchRows.filter((r) => norm(r.tournament) === "prem" && norm(r.finished) === "true");
     let weekFixturesUpdated = 0, weekFixturesUnmatched = 0;
     premMatches.forEach((r) => {
