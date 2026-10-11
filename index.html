@@ -225,7 +225,7 @@ const FIREBASE_CONFIG = {
 };
 
 const ADMIN_PASSWORD_FALLBACK = "zxcvb"; // used until an admin sets a custom one
-const BUILD_NUMBER = "151"; // bump this by 1 every time a new file is handed over
+const BUILD_NUMBER = "152"; // bump this by 1 every time a new file is handed over
 
 let initializeApp, getFirestore, doc, setDoc, getDoc, onSnapshot, collection, writeBatch;
 try {
@@ -1255,25 +1255,45 @@ function renderPlayerWeekDetailModal() {
   `;
 }
 
+// Photo addresses to try, in order. If one fails to load the image moves on to
+// the next (see window.photoFallback); if all fail the image is hidden and the
+// card just shows the name. The later two cover players with no photo yet in
+// last season's folder (new signings / transfers).
+function getPlayerPhotoUrls(p, cdnSize) {
+  if (!(p && p.playerCode && !p.photoDisabled)) return [];
+  const size = cdnSize || "110x140";
+  const code = esc(p.playerCode);
+  return [
+    `https://resources.premierleague.com/premierleague25/photos/players/${size}/${code}.png`,
+    `https://resources.premierleague.com/premierleague26/photos/players/${size}/${code}.png`,
+    `https://resources.premierleague.com/premierleague/photos/players/${size}/p${code}.png`,
+  ];
+}
+window.photoFallback = function (img) {
+  const alts = (img.dataset.alts || "").split("|").filter(Boolean);
+  const next = alts.shift();
+  if (next) { img.dataset.alts = alts.join("|"); img.src = next; }
+  else { img.style.display = "none"; }
+};
 function getPlayerPhotoUrl(p, cdnSize) {
-  return (p && p.playerCode && !p.photoDisabled) ? `https://resources.premierleague.com/premierleague25/photos/players/${cdnSize || "110x140"}/${esc(p.playerCode)}.png` : null;
+  return getPlayerPhotoUrls(p, cdnSize)[0] || null;
 }
 function renderPlayerPhotoImg(p, size) {
-  const url = getPlayerPhotoUrl(p);
-  if (!url) return "";
-  return `<img src="${url}" alt="" style="width:${size}px;height:${size}px;border-radius:50%;object-fit:cover;object-position:top;flex-shrink:0;background:#eee;cursor:pointer;" data-action="show-player-photo-large" data-player-id="${p.id}" onerror="this.style.display='none';" />`;
+  const urls = getPlayerPhotoUrls(p);
+  if (!urls.length) return "";
+  return `<img src="${urls[0]}" data-alts="${urls.slice(1).join("|")}" alt="" style="width:${size}px;height:${size}px;border-radius:50%;object-fit:cover;object-position:top;flex-shrink:0;background:#eee;cursor:pointer;" data-action="show-player-photo-large" data-player-id="${p.id}" onerror="photoFallback(this)" />`;
 }
 
 function renderPlayerPhotoModal() {
   if (!playerPhotoModalId) return "";
   const p = data.players.find((pp) => pp.id === playerPhotoModalId);
   if (!p) return "";
-  const bigUrl = getPlayerPhotoUrl(p, "110x140");
-  if (!bigUrl) return "";
+  const bigUrls = getPlayerPhotoUrls(p, "110x140");
+  if (!bigUrls.length) return "";
   return `
     <div class="modal-backdrop nested" data-action="close-player-photo-modal" style="background:rgba(0,0,0,0.8);">
       <div style="max-width:280px;width:100%;text-align:center;">
-        <img src="${bigUrl}" alt="${esc(p.name)}" style="width:100%;border-radius:16px;background:#eee;" onerror="this.style.display='none';" />
+        <img src="${bigUrls[0]}" data-alts="${bigUrls.slice(1).join("|")}" alt="${esc(p.name)}" style="width:100%;border-radius:16px;background:#eee;" onerror="photoFallback(this)" />
         <div style="color:#fff;font-weight:700;margin-top:10px;font-size:16px;">${esc(p.name)}</div>
         <button class="modal-close-btn" data-action="close-player-photo-modal" style="margin-top:14px;">✕</button>
       </div>
