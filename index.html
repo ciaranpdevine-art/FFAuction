@@ -4997,5 +4997,6 @@ function handleImportFile(e) {
 // Restore admin session if the tab already signed in
 if (isAdmin) { view = "admin"; pauseSync = true; }
 </script>
+<script>if('serviceWorker' in navigator){window.addEventListener('load',()=>{navigator.serviceWorker.register('./sw.js').catch(()=>{});});}</script>
 </body>
 </html>
