@@ -225,7 +225,7 @@ const FIREBASE_CONFIG = {
 };
 
 const ADMIN_PASSWORD_FALLBACK = "zxcvb"; // used until an admin sets a custom one
-const BUILD_NUMBER = "152"; // bump this by 1 every time a new file is handed over
+const BUILD_NUMBER = "153"; // bump this by 1 every time a new file is handed over
 
 let initializeApp, getFirestore, doc, setDoc, getDoc, onSnapshot, collection, writeBatch;
 try {
@@ -850,7 +850,7 @@ function getPlayerSeasonPoints(playerId) {
   return Object.values(weekly).reduce((a, b) => a + b, 0);
 }
 
-function buildManagerLeaderboard(groupId) {
+function computeManagerStatTotals(groupId) {
   const teams = groupTeams(data, groupId);
   const allOwnership = getAllOwnershipEntries(data);
 
@@ -874,7 +874,27 @@ function buildManagerLeaderboard(groupId) {
     });
     return { team, sums };
   });
+  return totals;
+}
 
+// Fairplay award: the manager whose players picked up the fewest yellow + red
+// cards (counted while each player was on that manager's squad). Ties share it.
+function buildFairplayAward(groupId) {
+  const totals = computeManagerStatTotals(groupId);
+  const hasAnyStats = Object.keys(data.playerStats || {}).length > 0;
+  if (!hasAnyStats || !totals.length) return null;
+  const rows = totals.map((t) => ({
+    team: t.team,
+    yellow: t.sums.yellowCards,
+    red: t.sums.redCards,
+    total: t.sums.yellowCards + t.sums.redCards,
+  }));
+  const min = Math.min(...rows.map((r) => r.total));
+  return { min, winners: rows.filter((r) => r.total === min) };
+}
+
+function buildManagerLeaderboard(groupId) {
+  const totals = computeManagerStatTotals(groupId);
   const labels = [
     ["goals", "⚽", "Goals"],
     ["assists", "🅰️", "Assists"],
@@ -891,6 +911,7 @@ function buildManagerLeaderboard(groupId) {
 
 function renderManagerLeaderboard(groupId) {
   const leaders = buildManagerLeaderboard(groupId);
+  const fairplay = buildFairplayAward(groupId);
   return `
     <div>
       ${leaders.map((l) => `
@@ -901,6 +922,13 @@ function renderManagerLeaderboard(groupId) {
             : `<div class="muted" style="padding:4px 2px;">None recorded yet.</div>`}
         </div>
       `).join("")}
+      <div style="margin-bottom:14px;">
+        <div class="group-label">🕊️ Fairplay Award</div>
+        ${fairplay
+          ? `<div style="padding:4px 2px;"><strong>${fairplay.min}</strong> card${fairplay.min === 1 ? "" : "s"} — ${fairplay.winners.map((w) => `${esc(w.team.name)} <span class="muted">(${w.yellow} 🟨, ${w.red} 🟥)</span>`).join(", ")}</div>
+             <div class="muted" style="padding:0 2px;font-size:12px;">Fewest yellow and red cards combined.</div>`
+          : `<div class="muted" style="padding:4px 2px;">None recorded yet.</div>`}
+      </div>
     </div>
   `;
 }
