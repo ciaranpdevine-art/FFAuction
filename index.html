@@ -225,7 +225,7 @@ const FIREBASE_CONFIG = {
 };
 
 const ADMIN_PASSWORD_FALLBACK = "zxcvb"; // used until an admin sets a custom one
-const BUILD_NUMBER = "153"; // bump this by 1 every time a new file is handed over
+const BUILD_NUMBER = "154"; // bump this by 1 every time a new file is handed over
 
 let initializeApp, getFirestore, doc, setDoc, getDoc, onSnapshot, collection, writeBatch;
 try {
@@ -2394,6 +2394,31 @@ function renderSquadBuilder() {
   `;
 }
 
+// One-stop list of every player currently flagged 🚩 injured, so they can be
+// cleared as they return without hunting through the full player list.
+function renderInjuredPlayersAdmin() {
+  const injured = data.players
+    .filter((p) => p.injured)
+    .slice()
+    .sort((a, b) => POSITIONS.indexOf(a.position) - POSITIONS.indexOf(b.position) || String(a.name).localeCompare(String(b.name)));
+  return `
+    <div class="card">
+      <h2 class="card-title">🚩 Injured players <span class="muted" style="margin:0;font-weight:400;">(${injured.length})</span></h2>
+      ${injured.length ? `
+        <p class="muted">Tap "Mark fit" when a player is back to clear their 🚩.</p>
+        ${injured.map((p) => {
+          const owner = findOwningTeam(data, p.id, adminGroupId);
+          return `
+            <div class="manage-row" style="gap:8px;flex-wrap:wrap;">
+              <span style="flex:1;min-width:140px;">${p.position ? `<span class="pos-badge">${p.position}</span>` : ""}${esc(p.name)}${p.club ? ` <span class="muted" style="margin:0;font-size:12px;">· ${esc(p.club)}</span>` : ""}${owner ? ` <span class="muted" style="margin:0;font-size:12px;color:var(--pitch);font-weight:700;">· ${esc(owner.name)}</span>` : ""}</span>
+              <button class="btn-ghost" data-action="toggle-injured" data-player-id="${p.id}" aria-label="Mark ${esc(p.name)} fit">✅ Mark fit</button>
+            </div>`;
+        }).join("")}
+      ` : `<p class="muted">No injured players flagged right now.</p>`}
+    </div>
+  `;
+}
+
 function renderAdmin(weekOptions) {
   if (weeklyPointsImportWeek === null || lastSeenTotalWeeksForImport !== data.totalWeeks) {
     weeklyPointsImportWeek = data.totalWeeks || 1;
@@ -2716,6 +2741,7 @@ function renderAdmin(weekOptions) {
     ` : ""}
 
     ${adminTab === "players" ? `
+    ${renderInjuredPlayersAdmin()}
     <div class="card">
       <h2 class="card-title">Player list</h2>
       <p class="muted">Everyone can see this list (with an Available/Unavailable filter) under the public "Player list" tab. Not tied to a team or cost here — when a manager signs one in the Squad builder, they set the auction price there.</p>
