@@ -225,7 +225,7 @@ const FIREBASE_CONFIG = {
 };
 
 const ADMIN_PASSWORD_FALLBACK = "zxcvb"; // used until an admin sets a custom one
-const BUILD_NUMBER = "154"; // bump this by 1 every time a new file is handed over
+const BUILD_NUMBER = "155"; // bump this by 1 every time a new file is handed over
 
 let initializeApp, getFirestore, doc, setDoc, getDoc, onSnapshot, collection, writeBatch;
 try {
@@ -374,6 +374,7 @@ let loginError = "";
 let saveError = "";
 let adminPasswordChangeStatus = null;
 let reportWeek = null;
+let positionChartWeek = null; // week selected in a team's "Weekly Pos" chart (null = none)
 let reportManagerFilter = "";
 let reportSubTab = "weekly"; // weekly | leaderboard
 let reportCopyStatus = null;
@@ -1843,7 +1844,12 @@ function renderPositionChart(team) {
   const scaleY = (pos) => padT + (h - padT - padB) * ((pos - 1) / Math.max(1, maxPos - 1));
   const coords = points.map((p, i) => [padL + i * stepX, scaleY(p.position)]);
   const path = coords.map((c, i) => (i === 0 ? "M" : "L") + c[0].toFixed(1) + "," + c[1].toFixed(1)).join(" ");
-  const dots = coords.map((c) => `<circle cx="${c[0].toFixed(1)}" cy="${c[1].toFixed(1)}" r="2.5" fill="#234D35" />`).join("");
+  const dots = coords.map((c, i) => {
+    const wk = points[i].week;
+    const selected = positionChartWeek === wk;
+    return `<circle cx="${c[0].toFixed(1)}" cy="${c[1].toFixed(1)}" r="${selected ? 4.5 : 2.5}" fill="${selected ? "#D4A537" : "#234D35"}" />` +
+      `<circle cx="${c[0].toFixed(1)}" cy="${c[1].toFixed(1)}" r="9" fill="transparent" style="cursor:pointer;" data-action="select-position-week" data-week="${wk}" />`;
+  }).join("");
   const xLabels = points.filter((p, i) => i === 0 || i === points.length - 1 || (i + 1) % 5 === 0)
     .map((p) => {
       const i = points.indexOf(p);
@@ -1861,6 +1867,61 @@ function renderPositionChart(team) {
         ${dots}
         ${xLabels}
       </svg>
+      <div class="week-bar" data-scroll-id="position-chart-weeks" style="margin:8px 0 0;padding-bottom:8px;">
+        ${points.map((pt) => `<button class="week-chip ${positionChartWeek === pt.week ? "active" : ""}" data-action="select-position-week" data-week="${pt.week}">Wk ${pt.week}</button>`).join("")}
+      </div>
+      ${positionChartWeek && positionChartWeek <= data.totalWeeks
+        ? renderLeagueSnapshot(team, positionChartWeek)
+        : `<p class="muted" style="margin:6px 0 0;font-size:12px;">Tap a week to see that week's points and how the league looked at that point.</p>`}
+    </div>
+  `;
+}
+
+// How the league stood after a given week, and how everyone has moved since.
+function renderLeagueSnapshot(team, week) {
+  const teams = groupTeams(data, activeGroupId);
+  const weekly = {};
+  teams.forEach((t) => { weekly[t.id] = getTeamWeeklyPoints(data, t); });
+  const cumAt = (t, w) => (w >= 1 && weekly[t.id][w - 1] ? weekly[t.id][w - 1].cumulative : 0);
+  const rank = (w) => {
+    const sorted = teams.slice().sort((a, b) => cumAt(b, w) - cumAt(a, w));
+    const pos = {};
+    sorted.forEach((t, i) => { pos[t.id] = i + 1; });
+    return pos;
+  };
+  const latest = data.totalWeeks;
+  const posThen = rank(week);
+  const posNow = rank(latest);
+  const weekPts = (t) => cumAt(t, week) - cumAt(t, week - 1);
+  const rows = teams.slice().sort((a, b) => posThen[a.id] - posThen[b.id]);
+  const best = teams.reduce((m, t) => (weekPts(t) > weekPts(m) ? t : m), teams[0]);
+  const me = team;
+  const moved = posThen[me.id] - posNow[me.id]; // + = climbed
+  const arrow = (n) => n > 0 ? `<span style="color:#2E7D4F;font-weight:700;">▲${n}</span>` : n < 0 ? `<span style="color:#B3402A;font-weight:700;">▼${-n}</span>` : `<span class="muted" style="margin:0;">–</span>`;
+  const sinceLine = week >= latest
+    ? ""
+    : `<div style="margin-top:4px;">Since Week ${week}: ${moved === 0 ? `held <strong>#${posNow[me.id]}</strong>` : `${moved > 0 ? "climbed" : "dropped"} <strong>${Math.abs(moved)}</strong> place${Math.abs(moved) === 1 ? "" : "s"} from <strong>#${posThen[me.id]}</strong> to <strong>#${posNow[me.id]}</strong>`}, scoring <strong>+${cumAt(me, latest) - cumAt(me, week)}</strong> pts.</div>`;
+  const cols = "26px 1fr 44px 52px 44px";
+  return `
+    <div style="margin-top:10px;padding:10px 12px;background:var(--card-alt, #F6F1E4);border-radius:10px;font-size:13px;">
+      <div><strong>${esc(me.name)}</strong> — Week ${week}: <strong>${weekPts(me)}</strong> pts · #${posThen[me.id]} overall (${cumAt(me, week)} pts)</div>
+      <div class="muted" style="margin:2px 0 0;font-size:12px;">Top score this week: ${esc(best.name)} (${weekPts(best)})</div>
+      ${sinceLine}
+    </div>
+    <div class="stat-label" style="text-align:left;margin:12px 0 6px;">League after Week ${week}</div>
+    <div style="font-size:12.5px;">
+      <div style="display:grid;grid-template-columns:${cols};gap:4px;padding:4px 2px;font-weight:700;color:var(--muted);text-transform:uppercase;font-size:10.5px;letter-spacing:0.04em;">
+        <span>#</span><span>Team</span><span style="text-align:right;">Pts</span><span style="text-align:right;">Now</span><span style="text-align:right;">Since</span>
+      </div>
+      ${rows.map((t) => `
+        <div style="display:grid;grid-template-columns:${cols};gap:4px;padding:6px 2px;border-top:1px solid var(--line);align-items:center;${t.id === me.id ? "background:rgba(212,165,55,0.16);font-weight:700;" : ""}">
+          <span>${posThen[t.id]}</span>
+          <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(t.name)}</span>
+          <span style="text-align:right;">${cumAt(t, week)}</span>
+          <span style="text-align:right;">${week >= latest ? `#${posNow[t.id]}` : `#${posNow[t.id]} ${arrow(posThen[t.id] - posNow[t.id])}`}</span>
+          <span style="text-align:right;">${week >= latest ? "–" : "+" + (cumAt(t, latest) - cumAt(t, week))}</span>
+        </div>
+      `).join("")}
     </div>
   `;
 }
@@ -3414,6 +3475,7 @@ function handleAction(e) {
   }
   else if (action === "select-team-view") { selectedTeamId = el.dataset.teamId; render(); }
   else if (action === "set-team-view-mode") { teamViewDisplayMode = el.dataset.mode; render(); }
+  else if (action === "select-position-week") { const w = Number(el.dataset.week); positionChartWeek = positionChartWeek === w ? null : w; render(); }
   else if (action === "select-pitch-week") { pitchViewWeek = Number(el.dataset.week); render(); }
   else if (action === "select-transfers-team") { selectedTransfersViewTeamId = el.dataset.teamId; render(); }
   else if (action === "set-player-filter") { playerListFilter = el.dataset.filter; render(); }
