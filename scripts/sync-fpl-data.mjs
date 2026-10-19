@@ -242,25 +242,38 @@ async function main() {
     }
 
     // A team's players only get points/stats written once ALL of that team's
-    // Premier League games this week are finished. The source lists every
-    // player each week (0 minutes for teams yet to play, partial live stats
-    // mid-match), so writing them early would show unplayed players as
-    // "played, 0 points" and break "yet to play".
-    const teamMatchStatus = {}; // team code -> { total, finished }
+    // Premier League games this week are finished AND the source has finished
+    // processing the player stats for them (player_stats_processed). The
+    // source lists every player each week (0 minutes for teams yet to play,
+    // partial live numbers mid-match), and for a few hours after full time a
+    // match can be flagged finished while its player stats are still frozen
+    // part-way (e.g. at 69 minutes, bonus points missing) — writing then gives
+    // wrong points. Teams not ready get nothing written; if their games are
+    // still to be played any earlier partial/zero entry is removed, and if
+    // they've finished but aren't processed yet the existing entry is left
+    // alone and corrected on the next run.
+    const isTrue = (v) => norm(v) === "true";
+    const teamMatchStatus = {}; // team code -> { total, finished, processed }
     matchRows
       .filter((r) => norm(r.tournament) === "prem")
       .forEach((r) => {
-        const done = norm(r.finished) === "true";
+        const done = isTrue(r.finished);
+        const processed = isTrue(r.player_stats_processed);
         [teamCodeToString(r.home_team), teamCodeToString(r.away_team)].forEach((code) => {
           if (!code) return;
-          teamMatchStatus[code] = teamMatchStatus[code] || { total: 0, finished: 0 };
+          teamMatchStatus[code] = teamMatchStatus[code] || { total: 0, finished: 0, processed: 0 };
           teamMatchStatus[code].total++;
           if (done) teamMatchStatus[code].finished++;
+          if (done && processed) teamMatchStatus[code].processed++;
         });
       });
     const teamReady = (code) => {
       const st = teamMatchStatus[code];
-      return !!st && st.total > 0 && st.finished === st.total;
+      return !!st && st.total > 0 && st.processed === st.total;
+    };
+    const teamAwaitingProcessing = (code) => {
+      const st = teamMatchStatus[code];
+      return !!st && st.total > 0 && st.finished === st.total && st.processed < st.total;
     };
 
     let statRows;
@@ -275,18 +288,22 @@ async function main() {
       const existing = existingWeeks[String(week)] || { scores: {}, playerStats: {} };
       const scores = { ...(existing.scores || {}) };
       const playerStats = { ...(existing.playerStats || {}) };
-      let matched = 0, unmatched = 0, notFinished = 0, cleared = 0;
+      let matched = 0, unmatched = 0, notFinished = 0, cleared = 0, awaitingProcessing = 0;
 
       statRows.forEach((row) => {
         const info = sourcePlayerById[row.id];
         const ready = info ? teamReady(info.teamCode) : false;
         const { player } = matchPlayer(row.id);
         if (!ready) {
-          // Their game isn't over (or they have no fixture): write nothing,
-          // and remove any earlier partial/zero entry so they show as yet to play.
+          // Not ready: write nothing. If their game still hasn't been played,
+          // remove any earlier partial/zero entry so they show as yet to play;
+          // if it's finished but the source hasn't processed the player stats
+          // yet, leave what's there to be corrected next run.
           if (player) {
             notFinished++;
-            if (scores[player.id] !== undefined || playerStats[player.id] !== undefined) {
+            if (info && teamAwaitingProcessing(info.teamCode)) {
+              awaitingProcessing++;
+            } else if (scores[player.id] !== undefined || playerStats[player.id] !== undefined) {
               delete scores[player.id];
               delete playerStats[player.id];
               cleared++;
@@ -322,7 +339,7 @@ async function main() {
       totalMatched += matched;
       totalUnmatched += unmatched;
       const tag = finishedFlagById[week] ? "" : " (in progress)";
-      console.log(`Week ${week}${tag}: stats — ${matched} written, ${unmatched} unmatched, ${notFinished} of your players still to play (${cleared} stale entries cleared).`);
+      console.log(`Week ${week}${tag}: stats — ${matched} written, ${unmatched} unmatched, ${notFinished} of your players not ready (${awaitingProcessing} finished but awaiting the source's final stats, ${cleared} stale entries cleared).`);
     } else {
       console.log(`Week ${week}: no stat rows yet (hasn't kicked off in the source), skipping stats for this week.`);
     }
