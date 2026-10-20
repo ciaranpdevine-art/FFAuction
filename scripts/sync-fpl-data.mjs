@@ -71,6 +71,7 @@ const FIREBASE_CONFIG = {
 };
 
 const SOURCE_SEASON = "2026-2027";
+const STATS_GRACE_HOURS = 12; // see processed check in the weekly loop
 const SOURCE_RAW_BASE = `https://raw.githubusercontent.com/olbauday/FPL-Core-Insights/main/data/${SOURCE_SEASON}`;
 
 async function fetchCsv(path) {
@@ -258,7 +259,13 @@ async function main() {
       .filter((r) => norm(r.tournament) === "prem")
       .forEach((r) => {
         const done = isTrue(r.finished);
-        const processed = isTrue(r.player_stats_processed);
+        // The source sometimes leaves player_stats_processed false for a day or
+        // more even though the stats are complete, so don't wait on it forever:
+        // once a finished match is a long way past kick-off, trust the stats.
+        // (Later runs overwrite with the latest numbers anyway.)
+        const kickoffMs = Date.parse(String(r.kickoff_time || "") + "Z");
+        const longSinceKickoff = Number.isFinite(kickoffMs) && Date.now() - kickoffMs > STATS_GRACE_HOURS * 3600 * 1000;
+        const processed = isTrue(r.player_stats_processed) || (done && longSinceKickoff);
         [teamCodeToString(r.home_team), teamCodeToString(r.away_team)].forEach((code) => {
           if (!code) return;
           teamMatchStatus[code] = teamMatchStatus[code] || { total: 0, finished: 0, processed: 0 };
