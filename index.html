@@ -419,6 +419,11 @@ const urlGroupParam = (new URLSearchParams(window.location.search).get("group") 
 // neither can approach Firestore's 1MB document-size limit no matter how
 // many seasons this league runs.
 let app, db, docRef, weeksColRef, connectionOk = true;
+// SAFETY: changes are only saved once the real league has arrived from the
+// server. With no signal, Firebase can briefly report "no league", and saving
+// then would replace the real league with the sample one.
+let mainLoaded = false, weeksLoaded = false;
+const NOT_LOADED_MSG = "Not connected yet, so that change wasn't saved. Check your signal and try again.";
 try {
   app = initializeApp(FIREBASE_CONFIG);
   db = getFirestore(app);
@@ -484,6 +489,12 @@ if (connectionOk) {
   }).catch(() => {});
 
   onSnapshot(docRef, (snap) => {
+    if (!snap.exists() && snap.metadata.fromCache) {
+      // Offline "no league" isn't real; show the placeholder but don't treat it as loaded.
+      if (!mainData) { mainData = { ...DEFAULT_CORE, schemaVersion: 2 }; computeMergedData(); render(); }
+      return;
+    }
+    mainLoaded = true;
     mainData = snap.exists() ? snap.data() : { ...DEFAULT_CORE, schemaVersion: 2 };
     computeMergedData();
     if (!pauseSync) render();
@@ -495,6 +506,7 @@ if (connectionOk) {
   });
 
   onSnapshot(weeksColRef, (snap) => {
+    if (!snap.metadata.fromCache || snap.docs.length) weeksLoaded = true;
     const next = {};
     snap.docs.forEach((d) => { next[d.id] = d.data(); });
     weeksData = next;
@@ -559,6 +571,7 @@ async function ensureMigrated() {
 // spread) are intentionally ignored here; they're never stored on the main
 // document. Score/stat changes go through persistWeeks() instead.
 async function persist(next) {
+  if (connectionOk && !mainLoaded) { saveError = NOT_LOADED_MSG; render(); return; }
   const { scores, playerStats, ...core } = next;
   // Pre-migration, scores/playerStats still live on the main document itself
   // (mainData.scores/mainData.playerStats) — carry them through UNCHANGED so
@@ -589,6 +602,7 @@ async function persist(next) {
 // updated players list from an import) — written atomically alongside the
 // week document(s) in one batch.
 async function persistWeeks(weekPatches, coreChanges) {
+  if (connectionOk && (!mainLoaded || !weeksLoaded)) { saveError = NOT_LOADED_MSG; render(); return; }
   const migrated = await ensureMigrated();
   if (!migrated) { render(); return; }
 
