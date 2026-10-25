@@ -2,13 +2,11 @@ name: Sync FPL data
 
 on:
   schedule:
-    # Overnight, once the day's games are all finished (cron times are UTC):
-    # 23:30 UTC = just after midnight UK time while clocks are on BST
-    # (late March - late October), 23:30 UK time otherwise. The second run
-    # is a safety net after the source's early-morning refresh in case the
-    # first is delayed or skipped by GitHub.
-    - cron: "30 23 * * *"
-    - cron: "30 4 * * *"
+    # Hourly check (UTC). The script only writes finished matches whose stats
+    # are complete, and skips anything unchanged, so frequent runs are safe.
+    # The source dataset itself refreshes ~3x/day, so results appear at the
+    # first run after each source refresh. GitHub may start runs a bit late.
+    - cron: "17 * * * *"
   workflow_dispatch: {} # lets you trigger a run manually from the Actions tab
 
 jobs:

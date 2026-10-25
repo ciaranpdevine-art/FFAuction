@@ -72,6 +72,7 @@ const FIREBASE_CONFIG = {
 
 const SOURCE_SEASON = "2026-2027";
 const STATS_GRACE_HOURS = 12; // see processed check in the weekly loop
+const MIN_COMPLETE_MATCH_MINUTES = 1800; // both teams combined; a full match is ~1,980
 const SOURCE_RAW_BASE = `https://raw.githubusercontent.com/olbauday/FPL-Core-Insights/main/data/${SOURCE_SEASON}`;
 
 async function fetchCsv(path) {
@@ -103,7 +104,7 @@ async function main() {
   // Any gameweek whose deadline has passed has started (or finished) — sync
   // it regardless of whether the source has marked the whole round
   // "finished" yet, so in-progress gameweeks get live partial updates.
-  const weeksToSync = summaries
+  const startedWeeks = summaries
     .filter((row) => {
       const id = Number(row.id);
       const deadline = Number(row.deadline_time_epoch);
@@ -113,12 +114,7 @@ async function main() {
     .sort((a, b) => a - b);
   const finishedFlagById = {};
   summaries.forEach((row) => { finishedFlagById[Number(row.id)] = norm(row.finished) === "true"; });
-  console.log(
-    `Gameweeks to sync: ${weeksToSync.join(", ") || "(none yet)"} ` +
-      `(${weeksToSync.filter((w) => finishedFlagById[w]).length} fully finished, ` +
-      `${weeksToSync.filter((w) => !finishedFlagById[w]).length} still in progress)`
-  );
-  if (!weeksToSync.length) {
+  if (!startedWeeks.length) {
     console.log("Nothing to sync yet this season.");
     return;
   }
@@ -225,6 +221,17 @@ async function main() {
   const existingWeeks = {};
   existingWeeksSnap.forEach((d) => { existingWeeks[d.id] = d.data(); });
 
+  // The script runs often, so only re-check the latest few gameweeks (where
+  // results are still arriving and bonus points can still shift) plus any
+  // started week that has no data yet. Older, settled weeks are left alone.
+  const latestStarted = startedWeeks[startedWeeks.length - 1];
+  const weeksToSync = startedWeeks.filter((w) => w >= latestStarted - 2 || !existingWeeks[String(w)]);
+  console.log(
+    `Gameweeks to check: ${weeksToSync.join(", ")} ` +
+      `(${weeksToSync.filter((w) => finishedFlagById[w]).length} fully finished, ` +
+      `${weeksToSync.filter((w) => !finishedFlagById[w]).length} in progress)`
+  );
+
   const batch = writeBatch(db);
   let weeksWritten = 0;
   let totalMatched = 0, totalUnmatched = 0;
@@ -241,6 +248,22 @@ async function main() {
       console.log(`Week ${week}: couldn't fetch match results (${e.message}), skipping this week entirely.`);
       continue;
     }
+
+    let statRows;
+    try {
+      statRows = await fetchCsv(`By Gameweek/GW${week}/player_gameweek_stats.csv`);
+    } catch (e) {
+      console.log(`Week ${week}: couldn't fetch player stats (${e.message}), skipping stats for this week.`);
+      statRows = [];
+    }
+    // Total minutes played by each team's players so far this week, used to
+    // tell a finished match whose stats are complete from one whose stats are
+    // still frozen part-way (a full match is ~1,980 minutes across both sides).
+    const minutesByTeam = {};
+    statRows.forEach((row) => {
+      const info = sourcePlayerById[row.id];
+      if (info && info.teamCode) minutesByTeam[info.teamCode] = (minutesByTeam[info.teamCode] || 0) + (Number(row.minutes) || 0);
+    });
 
     // A team's players only get points/stats written once ALL of that team's
     // Premier League games this week are finished AND the source has finished
@@ -265,7 +288,9 @@ async function main() {
         // (Later runs overwrite with the latest numbers anyway.)
         const kickoffMs = Date.parse(String(r.kickoff_time || "") + "Z");
         const longSinceKickoff = Number.isFinite(kickoffMs) && Date.now() - kickoffMs > STATS_GRACE_HOURS * 3600 * 1000;
-        const processed = isTrue(r.player_stats_processed) || (done && longSinceKickoff);
+        const matchMinutes = (minutesByTeam[teamCodeToString(r.home_team)] || 0) + (minutesByTeam[teamCodeToString(r.away_team)] || 0);
+        const looksComplete = matchMinutes >= MIN_COMPLETE_MATCH_MINUTES;
+        const processed = isTrue(r.player_stats_processed) || (done && (looksComplete || longSinceKickoff));
         [teamCodeToString(r.home_team), teamCodeToString(r.away_team)].forEach((code) => {
           if (!code) return;
           teamMatchStatus[code] = teamMatchStatus[code] || { total: 0, finished: 0, processed: 0 };
@@ -282,14 +307,6 @@ async function main() {
       const st = teamMatchStatus[code];
       return !!st && st.total > 0 && st.finished === st.total && st.processed < st.total;
     };
-
-    let statRows;
-    try {
-      statRows = await fetchCsv(`By Gameweek/GW${week}/player_gameweek_stats.csv`);
-    } catch (e) {
-      console.log(`Week ${week}: couldn't fetch player stats (${e.message}), skipping stats for this week.`);
-      statRows = [];
-    }
 
     if (statRows.length) {
       const existing = existingWeeks[String(week)] || { scores: {}, playerStats: {} };
@@ -341,8 +358,12 @@ async function main() {
         };
       });
 
-      batch.set(doc(db, "league", "main", "weeks", String(week)), { scores, playerStats });
-      weeksWritten++;
+      const stable = (o) => JSON.stringify(o, (k, v) => (v && typeof v === "object" && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a.localeCompare(b))) : v));
+      const unchanged = existingWeeks[String(week)] && stable({ scores, playerStats }) === stable({ scores: existing.scores || {}, playerStats: existing.playerStats || {} });
+      if (!unchanged) {
+        batch.set(doc(db, "league", "main", "weeks", String(week)), { scores, playerStats });
+        weeksWritten++;
+      }
       totalMatched += matched;
       totalUnmatched += unmatched;
       const tag = finishedFlagById[week] ? "" : " (in progress)";
