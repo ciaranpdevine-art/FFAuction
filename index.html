@@ -3505,7 +3505,7 @@ function handleAction(e) {
     playerWeekDetail = null;
     render();
   }
-  else if (action === "show-player-mins") { playerMinsModalId = el.dataset.playerId; render(); }
+  else if (action === "show-player-mins") { e.stopPropagation(); playerMinsModalId = el.dataset.playerId; render(); }
   else if (action === "close-player-mins") {
     if (el.classList.contains("modal-backdrop") && e.target !== el) return;
     playerMinsModalId = null;
