@@ -225,7 +225,7 @@ const FIREBASE_CONFIG = {
 };
 
 const ADMIN_PASSWORD_FALLBACK = "zxcvb"; // used until an admin sets a custom one
-const BUILD_NUMBER = "155"; // bump this by 1 every time a new file is handed over
+const BUILD_NUMBER = "156"; // bump this by 1 every time a new file is handed over
 
 let initializeApp, getFirestore, doc, setDoc, getDoc, onSnapshot, collection, writeBatch;
 try {
@@ -354,6 +354,7 @@ let playerListStatFilter = "points"; // which stat drives sort + the displayed t
 let playerPointsModalId = null;
 let playerWeekDetail = null; // { playerId, week }
 let playerSeasonStatsModalId = null;
+let playerMinsModalId = null;
 let playerPhotoModalId = null;
 let compareModalOpen = false;
 let compareAId = null;
@@ -809,6 +810,7 @@ function render() {
     ${renderPlayerPointsModal()}
     ${renderPlayerWeekDetailModal()}
     ${renderPlayerSeasonStatsModal()}
+    ${renderPlayerMinsModal()}
     ${renderPlayerPhotoModal()}
     ${renderComparePlayersModal()}
   `;
@@ -1431,6 +1433,46 @@ function renderComparePlayersModal() {
   `;
 }
 
+function getPossibleGameweeks(club) {
+  let n = 0;
+  for (let w = 1; w <= FIXTURE_WEEKS; w++) { if (getMatchResultForClub(club, w)) n++; }
+  return n;
+}
+
+function renderPlayerMinsModal() {
+  if (!playerMinsModalId) return "";
+  const p = data.players.find((pp) => pp.id === playerMinsModalId);
+  if (!p) return "";
+  const pts = getPlayerSeasonPoints(p.id);
+  const mins = getPlayerSeasonStats(p.id).minutes || 0;
+  const weeks = getPossibleGameweeks(p.club);
+  const possible = weeks * 90;
+  const pct = possible > 0 ? Math.round((mins / possible) * 100) : null;
+  const row = (label, val, note) => `
+    <div class="modal-week-row" style="justify-content:center;">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;width:100%;max-width:300px;">
+        <span>${label}${note ? `<div class="muted" style="margin:0;font-size:11px;">${note}</div>` : ""}</span>
+        ${scoreTile(val, true, false, false)}
+      </div>
+    </div>`;
+  return `
+    <div class="modal-backdrop nested" data-action="close-player-mins">
+      <div class="modal-box">
+        <div class="modal-header">
+          <span class="modal-title">${esc(p.name)} · Minutes</span>
+          <button class="modal-close-btn" data-action="close-player-mins">✕</button>
+        </div>
+        ${row("Gameweeks played by club", weeks, "Finished matches so far")}
+        ${row("Possible mins", possible, `${weeks} × 90`)}
+        ${row("Mins played", mins)}
+        ${row("% of possible mins", pct !== null ? pct + "%" : "–")}
+        ${row("Mins / pt", pts > 0 ? Math.round(mins / pts) : "–", "Minutes actually played")}
+        ${row("Possible mins / pt", pts > 0 && possible > 0 ? Math.round(possible / pts) : "–", "If he'd played every minute")}
+      </div>
+    </div>
+  `;
+}
+
 function renderPlayerSeasonStatsModal() {
   if (!playerSeasonStatsModalId) return "";
   const p = data.players.find((pp) => pp.id === playerSeasonStatsModalId);
@@ -1494,7 +1536,7 @@ function renderPlayerPointsModal() {
         </div>
         <div style="display:flex;gap:8px;justify-content:center;padding:12px 18px;border-bottom:1px solid var(--line);background:#F4EFE4;cursor:pointer;" data-action="show-player-season-stats" data-player-id="${p.id}">
           <div style="text-align:center;"><div class="stat-label">Season pts</div>${scoreTile(seasonPoints, true, false, false)}</div>
-          ${isStatVisibleForPosition(p.position, "minutes") ? `<div style="text-align:center;"><div class="stat-label">Season mins</div>${scoreTile(seasonStats.minutes, true, false, false)}</div>
+          ${isStatVisibleForPosition(p.position, "minutes") ? `<div style="text-align:center;" data-action="show-player-mins" data-player-id="${p.id}"><div class="stat-label">Season mins ▸</div>${scoreTile(seasonStats.minutes, true, false, false)}</div>
           <div style="text-align:center;"><div class="stat-label">Value (mins/pt)</div>${scoreTile(value !== null ? value : "–", true, false, false)}</div>` : ""}
         </div>
         ${weekOptions.map((w) => {
@@ -3461,6 +3503,12 @@ function handleAction(e) {
   else if (action === "close-player-week-detail") {
     if (el.classList.contains("modal-backdrop") && e.target !== el) return;
     playerWeekDetail = null;
+    render();
+  }
+  else if (action === "show-player-mins") { playerMinsModalId = el.dataset.playerId; render(); }
+  else if (action === "close-player-mins") {
+    if (el.classList.contains("modal-backdrop") && e.target !== el) return;
+    playerMinsModalId = null;
     render();
   }
   else if (action === "show-player-season-stats") { playerSeasonStatsModalId = el.dataset.playerId; render(); }
