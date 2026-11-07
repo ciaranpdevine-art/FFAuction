@@ -235,7 +235,7 @@ const FIREBASE_CONFIG = {
 };
 
 const ADMIN_PASSWORD_FALLBACK = "zxcvb"; // used until an admin sets a custom one
-const BUILD_NUMBER = "157"; // bump this by 1 every time a new file is handed over
+const BUILD_NUMBER = "158"; // bump this by 1 every time a new file is handed over
 
 let initializeApp, getFirestore, doc, setDoc, getDoc, onSnapshot, collection, writeBatch;
 try {
@@ -2684,6 +2684,13 @@ function renderAdmin(weekOptions) {
 
     ${adminTab === "scores" ? `
     <div class="card">
+      <h2 class="card-title">Sync from source now</h2>
+      <p class="muted">Pulls the latest finished games straight from the public FPL Core Insights data — the same as the hourly automatic sync, on demand. Only finished games with complete stats are saved; games still in progress are left alone. Safe to press any time.</p>
+      <button class="btn-primary" data-action="sync-from-source" ${syncingFromSource ? "disabled" : ""}>🔄 ${syncingFromSource ? "Syncing…" : "Sync from source now"}</button>
+      ${syncStatus ? `<div class="status-banner ${syncStatus.type === "ok" ? "status-ok" : "status-error"}" style="margin-top:12px;">${syncStatus.type === "ok" ? "✓" : "⚠"} <span>${esc(syncStatus.message)}</span></div>${syncStatus.lines && syncStatus.lines.length ? `<ul class="muted" style="margin:8px 0 0 18px;padding:0;font-size:12px;">${syncStatus.lines.map((l) => `<li>${esc(l)}</li>`).join("")}</ul>` : ""}` : ""}
+    </div>
+
+    <div class="card">
       <h2 class="card-title">Import weekly points & stats</h2>
       <p class="muted">Export just your signed players (not the whole pool), fill in that week's numbers, then re-import. Columns: <strong>Player, Club, Points, Mins Played, Goals Scored, Assists, Clean Sheets, Yellow Cards, Red Cards, Saves, Goals Conceded, DEFCON, Bonus Points</strong> — everything except Player/Club/Points is optional; leave any out if you don't track them. Add an <strong>ID</strong> column to match by External ID instead of name + club, if you've set those up. Importing <strong>overrides</strong> whatever was there before for that week — including anything entered by hand — so it's always safe to re-import if a number was wrong, or hand-edit below.</p>
       <p class="muted" style="margin-top:-8px;">Prefer typing directly instead of a spreadsheet? Scroll down to "Weekly points & stats" — every field there does the same thing, just entered by hand per player.</p>
@@ -3514,6 +3521,7 @@ function handleAction(e) {
     window.location.href = url.toString();
   }
   else if (action === "set-subview") { subView = el.dataset.subview; moreMenuOpen = false; window.scrollTo(0, 0); render(); }
+  else if (action === "sync-from-source") { syncFromSource(); }
   else if (action === "toggle-more-menu") { moreMenuOpen = !moreMenuOpen; render(); }
   else if (action === "close-more-menu") { if (e.target !== el) return; moreMenuOpen = false; render(); }
   else if (action === "show-player-points-modal") { playerPointsModalId = el.dataset.playerId; render(); }
@@ -4939,6 +4947,250 @@ function downloadWeeklyPointsTemplate() {
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Weekly points");
   XLSX.writeFile(wb, `weekly-points-week${weeklyPointsImportWeek}-template.xlsx`);
+}
+
+// ---- Sync from source (same rules as scripts/sync-fpl-data.mjs, run in the browser) ----
+const SYNC_SOURCE_SEASON = "2026-2027"; // update once a year with the source repo's new season folder
+const SYNC_SOURCE_BASE = `https://raw.githubusercontent.com/olbauday/FPL-Core-Insights/main/data/${SYNC_SOURCE_SEASON}`;
+const SYNC_STATS_GRACE_HOURS = 12;
+const SYNC_MIN_COMPLETE_MATCH_MINUTES = 1800;
+let syncingFromSource = false;
+let syncStatus = null;
+
+function parseCsvText(text) {
+  const rows = [];
+  let row = [], field = "", inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else inQuotes = false; }
+      else field += c;
+    } else if (c === '"') inQuotes = true;
+    else if (c === ",") { row.push(field); field = ""; }
+    else if (c === "\n") { row.push(field); rows.push(row); row = []; field = ""; }
+    else if (c !== "\r") field += c;
+  }
+  if (field !== "" || row.length) { row.push(field); rows.push(row); }
+  const header = rows.shift() || [];
+  return rows.filter((r) => r.length > 1 || (r[0] || "") !== "").map((r) => Object.fromEntries(header.map((h, i) => [h, r[i] === undefined ? "" : r[i]])));
+}
+
+async function fetchSourceCsv(path) {
+  const res = await fetch(`${SYNC_SOURCE_BASE}/${path}?t=${Date.now()}`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`Fetch failed (${res.status}) for ${path}`);
+  return parseCsvText(await res.text());
+}
+
+async function syncFromSource() {
+  if (syncingFromSource) return;
+  if (connectionOk && (!mainLoaded || !weeksLoaded)) { syncStatus = { type: "error", message: NOT_LOADED_MSG, lines: [] }; render(); return; }
+  syncingFromSource = true;
+  syncStatus = null;
+  saveError = "";
+  render();
+  const lines = [];
+  try {
+    const sn = (s) => String(s || "").trim().toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+    const isTrue = (v) => sn(v) === "true";
+    const teamCode = (raw) => { const n = Number(raw); return Number.isFinite(n) ? String(Math.trunc(n)) : null; };
+
+    const summaries = await fetchSourceCsv("gameweek_summaries.csv");
+    const nowEpoch = Math.floor(Date.now() / 1000);
+    const startedWeeks = summaries
+      .filter((r) => { const id = Number(r.id), dl = Number(r.deadline_time_epoch); return Number.isFinite(id) && id > 0 && Number.isFinite(dl) && dl <= nowEpoch; })
+      .map((r) => Number(r.id)).sort((a, b) => a - b);
+    if (!startedWeeks.length) { syncStatus = { type: "ok", message: "Nothing to sync yet this season.", lines: [] }; return; }
+
+    const [sourcePlayers, sourceTeams] = await Promise.all([fetchSourceCsv("players.csv"), fetchSourceCsv("teams.csv")]);
+    const clubNameByTeamCode = {};
+    sourceTeams.forEach((t) => { clubNameByTeamCode[t.code] = t.name; });
+    const sourcePlayerById = {};
+    sourcePlayers.forEach((p) => {
+      sourcePlayerById[p.player_id] = {
+        webName: p.web_name,
+        fullName: `${p.first_name} ${p.second_name}`.trim(),
+        club: clubNameByTeamCode[p.team_code] || "",
+        teamCode: teamCode(p.team_code),
+      };
+    });
+
+    const players = mainData.players || [];
+    const fixtures = [...(mainData.fixtures || [])];
+    const byExternalId = {};
+    players.forEach((p) => { if (p.externalId) byExternalId[String(p.externalId)] = p; });
+    const byNameClub = {};
+    players.forEach((p) => { byNameClub[`${sn(p.name)}|${sn(p.club)}`] = p; });
+    const matchSrc = (fplId) => {
+      const byId = byExternalId[String(fplId)];
+      if (byId) return { player: byId, matchedBy: "id" };
+      const info = sourcePlayerById[fplId];
+      if (!info) return { player: null };
+      const a = byNameClub[`${sn(info.webName)}|${sn(info.club)}`];
+      if (a) return { player: a, matchedBy: "name" };
+      const b = byNameClub[`${sn(info.fullName)}|${sn(info.club)}`];
+      if (b) return { player: b, matchedBy: "name" };
+      return { player: null };
+    };
+
+    // Which spelling of each club does your app use? (voted from External-ID-matched players)
+    const votes = {};
+    sourcePlayers.forEach((p) => {
+      const { player, matchedBy } = matchSrc(p.player_id);
+      if (!player || matchedBy !== "id") return;
+      const sc = clubNameByTeamCode[p.team_code] || "";
+      if (!sc) return;
+      votes[sc] = votes[sc] || {};
+      votes[sc][player.club] = (votes[sc][player.club] || 0) + 1;
+    });
+    const resolvedClub = {};
+    Object.entries(votes).forEach(([sc, counts]) => {
+      let best = null, bc = 0;
+      Object.entries(counts).forEach(([ac, c]) => { if (c > bc) { best = ac; bc = c; } });
+      resolvedClub[sc] = best || sc;
+    });
+
+    // Fill blank photo codes only
+    const updatedPlayers = players.map((p) => ({ ...p }));
+    const updatedById = {};
+    updatedPlayers.forEach((p) => { updatedById[p.id] = p; });
+    let photoCodesFilled = 0;
+    sourcePlayers.forEach((sp) => {
+      const code = String(sp.player_code || "").trim();
+      if (!code) return;
+      const { player, matchedBy } = matchSrc(sp.player_id);
+      if (!player || matchedBy !== "id") return;
+      const t = updatedById[player.id];
+      if (t && !String(t.playerCode || "").trim()) { t.playerCode = code; photoCodesFilled++; }
+    });
+
+    const fixtureIndex = {};
+    fixtures.forEach((f, i) => { fixtureIndex[`${f.week}|${sn(f.homeClub)}|${sn(f.awayClub)}`] = i; });
+
+    const latestStarted = startedWeeks[startedWeeks.length - 1];
+    const weeksToSync = startedWeeks.filter((w) => w >= latestStarted - 2 || !weeksData[String(w)]);
+    const stable = (o) => JSON.stringify(o, (k, v) => (v && typeof v === "object" && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a.localeCompare(b))) : v));
+
+    const weekPatches = {};
+    let fixturesUpdated = 0, gamesAdded = 0, gamesWaiting = 0, unmatchedPlayers = 0;
+    const waitingLines = [];
+
+    for (const week of weeksToSync) {
+      let matchRows, statRows;
+      try { matchRows = await fetchSourceCsv(`By Gameweek/GW${week}/matches.csv`); } catch (e) { continue; }
+      try { statRows = await fetchSourceCsv(`By Gameweek/GW${week}/player_gameweek_stats.csv`); } catch (e) { statRows = []; }
+      const minutesByTeam = {};
+      statRows.forEach((row) => {
+        const info = sourcePlayerById[row.id];
+        if (info && info.teamCode) minutesByTeam[info.teamCode] = (minutesByTeam[info.teamCode] || 0) + (Number(row.minutes) || 0);
+      });
+      const status = {};
+      matchRows.filter((r) => sn(r.tournament) === "prem").forEach((r) => {
+        const done = isTrue(r.finished);
+        const kickoffMs = Date.parse(String(r.kickoff_time || "") + "Z");
+        const longSince = Number.isFinite(kickoffMs) && Date.now() - kickoffMs > SYNC_STATS_GRACE_HOURS * 3600 * 1000;
+        const mm = (minutesByTeam[teamCode(r.home_team)] || 0) + (minutesByTeam[teamCode(r.away_team)] || 0);
+        const processed = isTrue(r.player_stats_processed) || (done && (mm >= SYNC_MIN_COMPLETE_MATCH_MINUTES || longSince));
+        [teamCode(r.home_team), teamCode(r.away_team)].forEach((code) => {
+          if (!code) return;
+          status[code] = status[code] || { total: 0, finished: 0, processed: 0 };
+          status[code].total++;
+          if (done) status[code].finished++;
+          if (done && processed) status[code].processed++;
+        });
+        if (!(done && processed) && Number.isFinite(kickoffMs) && kickoffMs < Date.now()) {
+          gamesWaiting++;
+          waitingLines.push(`Week ${week}: ${resolvedClub[clubNameByTeamCode[teamCode(r.home_team)]] || clubNameByTeamCode[teamCode(r.home_team)]} v ${resolvedClub[clubNameByTeamCode[teamCode(r.away_team)]] || clubNameByTeamCode[teamCode(r.away_team)]} — not final in the source yet`);
+        }
+      });
+      const ready = (code) => { const s = status[code]; return !!s && s.total > 0 && s.processed === s.total; };
+      const awaiting = (code) => { const s = status[code]; return !!s && s.total > 0 && s.finished === s.total && s.processed < s.total; };
+
+      if (statRows.length) {
+        const existing = weeksData[String(week)] || { scores: {}, playerStats: {} };
+        const scores = { ...(existing.scores || {}) };
+        const playerStats = { ...(existing.playerStats || {}) };
+        statRows.forEach((row) => {
+          const info = sourcePlayerById[row.id];
+          const isReady = info ? ready(info.teamCode) : false;
+          const { player } = matchSrc(row.id);
+          if (!isReady) {
+            if (player && !(info && awaiting(info.teamCode)) && (scores[player.id] !== undefined || playerStats[player.id] !== undefined)) {
+              delete scores[player.id];
+              delete playerStats[player.id];
+            }
+            return;
+          }
+          if (!player) { unmatchedPlayers++; return; }
+          scores[player.id] = Number(row.total_points) || 0;
+          playerStats[player.id] = {
+            minutes: Number(row.minutes) || 0,
+            goals: Number(row.goals_scored) || 0,
+            assists: Number(row.assists) || 0,
+            cleanSheets: Number(row.clean_sheets) || 0,
+            yellowCards: Number(row.yellow_cards) || 0,
+            redCards: Number(row.red_cards) || 0,
+            saves: Number(row.saves) || 0,
+            goalsConceded: Number(row.goals_conceded) || 0,
+            defcon: Number(row.defensive_contribution) || 0,
+            bonusPoints: Number(row.bonus) || 0,
+          };
+        });
+        const unchanged = weeksData[String(week)] && stable({ scores, playerStats }) === stable({ scores: existing.scores || {}, playerStats: existing.playerStats || {} });
+        if (!unchanged) {
+          // Count games newly added: players with a score now that had none before
+          const before = existing.scores || {};
+          const newlyScored = Object.keys(scores).filter((id) => before[id] === undefined).length;
+          if (newlyScored) lines.push(`Week ${week}: ${newlyScored} player${newlyScored === 1 ? "" : "s"} newly scored`);
+          else lines.push(`Week ${week}: existing points refreshed`);
+          weekPatches[week] = { scores, playerStats };
+          gamesAdded += newlyScored ? 1 : 0;
+        }
+      }
+
+      matchRows.filter((r) => sn(r.tournament) === "prem" && isTrue(r.finished)).forEach((r) => {
+        const rawHome = clubNameByTeamCode[teamCode(r.home_team)];
+        const rawAway = clubNameByTeamCode[teamCode(r.away_team)];
+        const homeClub = resolvedClub[rawHome] || rawHome;
+        const awayClub = resolvedClub[rawAway] || rawAway;
+        if (!homeClub || !awayClub || r.home_score === "" || r.away_score === "") return;
+        const idx = fixtureIndex[`${week}|${sn(homeClub)}|${sn(awayClub)}`];
+        if (idx === undefined) return;
+        const hs = Math.round(Number(r.home_score)), as = Math.round(Number(r.away_score));
+        if (fixtures[idx].homeScore !== hs || fixtures[idx].awayScore !== as) {
+          fixtures[idx] = { ...fixtures[idx], homeScore: hs, awayScore: as };
+          fixturesUpdated++;
+        }
+      });
+    }
+
+    const weeksChanged = Object.keys(weekPatches).length;
+    if (!weeksChanged && !fixturesUpdated && !photoCodesFilled) {
+      syncStatus = { type: "ok", message: "Already up to date — nothing new in the source.", lines: waitingLines };
+      return;
+    }
+    const core = (fixturesUpdated || photoCodesFilled) ? { players: updatedPlayers, fixtures } : undefined;
+    if (weeksChanged) {
+      await persistWeeks(weekPatches, core);
+    } else {
+      await persist({ ...mainData, ...core });
+    }
+    if (saveError) { syncStatus = { type: "error", message: saveError, lines: [] }; return; }
+    const parts = [];
+    if (weeksChanged) parts.push(`${weeksChanged} gameweek${weeksChanged === 1 ? "" : "s"} updated`);
+    if (fixturesUpdated) parts.push(`${fixturesUpdated} match result${fixturesUpdated === 1 ? "" : "s"}`);
+    if (photoCodesFilled) parts.push(`${photoCodesFilled} photo code${photoCodesFilled === 1 ? "" : "s"}`);
+    syncStatus = {
+      type: "ok",
+      message: `Synced — ${parts.join(", ")}.${unmatchedPlayers ? ` ${unmatchedPlayers} source player(s) couldn't be matched (set their External ID in Admin → Players).` : ""}`,
+      lines: [...lines, ...waitingLines],
+    };
+  } catch (e) {
+    console.error("Sync failed:", e);
+    syncStatus = { type: "error", message: `Sync failed — ${e && e.message ? e.message : "couldn't reach the source."} Nothing was changed.`, lines: [] };
+  } finally {
+    syncingFromSource = false;
+    render();
+  }
 }
 
 function handleImportWeeklyPointsFile(e) {
