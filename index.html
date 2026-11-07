@@ -235,7 +235,7 @@ const FIREBASE_CONFIG = {
 };
 
 const ADMIN_PASSWORD_FALLBACK = "zxcvb"; // used until an admin sets a custom one
-const BUILD_NUMBER = "158"; // bump this by 1 every time a new file is handed over
+const BUILD_NUMBER = "159"; // bump this by 1 every time a new file is handed over
 
 let initializeApp, getFirestore, doc, setDoc, getDoc, onSnapshot, collection, writeBatch;
 try {
@@ -948,8 +948,33 @@ function buildManagerLeaderboard(groupId) {
   });
 }
 
+// Highest / lowest single-gameweek score by a manager, over completed gameweeks
+// only (a week still in progress would make "lowest" meaningless). A week counts
+// as complete when it has points and every fixture listed for it has a result.
+function buildGameweekExtremes(groupId) {
+  const teams = groupTeams(data, groupId);
+  const weeklyByTeam = teams.map((team) => {
+    const cum = getTeamWeeklyPoints(data, team);
+    return { team, perWeek: cum.map((c, i) => c.cumulative - (i ? cum[i - 1].cumulative : 0)) };
+  });
+  const entries = [];
+  for (let w = 1; w <= data.totalWeeks; w++) {
+    const hasData = data.players.some((p) => (data.scores[p.id] || {})[w] !== undefined);
+    if (!hasData) continue;
+    const wkFixtures = (data.fixtures || []).filter((f) => Number(f.week) === w);
+    const complete = !wkFixtures.length || wkFixtures.every((f) => f.homeScore !== undefined && f.homeScore !== null && f.homeScore !== "");
+    if (!complete) continue;
+    weeklyByTeam.forEach(({ team, perWeek }) => entries.push({ team, week: w, pts: perWeek[w - 1] }));
+  }
+  if (!entries.length) return null;
+  const hi = Math.max(...entries.map((e) => e.pts));
+  const lo = Math.min(...entries.map((e) => e.pts));
+  return { hi, lo, highest: entries.filter((e) => e.pts === hi), lowest: entries.filter((e) => e.pts === lo) };
+}
+
 function renderManagerLeaderboard(groupId) {
   const leaders = buildManagerLeaderboard(groupId);
+  const extremes = buildGameweekExtremes(groupId);
   const fairplay = buildFairplayAward(groupId);
   return `
     <div>
@@ -961,6 +986,13 @@ function renderManagerLeaderboard(groupId) {
             : `<div class="muted" style="padding:4px 2px;">None recorded yet.</div>`}
         </div>
       `).join("")}
+      ${["highest", "lowest"].map((k) => `
+      <div style="margin-bottom:14px;">
+        <div class="group-label">${k === "highest" ? "🚀 Highest gameweek score" : "📉 Lowest gameweek score"}</div>
+        ${extremes
+          ? `<div style="padding:4px 2px;"><strong>${extremes[k === "highest" ? "hi" : "lo"]}</strong> pts — ${extremes[k].map((e) => `${esc(e.team.name)} <span class="muted">(Week ${e.week})</span>`).join(", ")}</div>`
+          : `<div class="muted" style="padding:4px 2px;">None recorded yet.</div>`}
+      </div>`).join("")}
       <div style="margin-bottom:14px;">
         <div class="group-label">🕊️ Fairplay Award</div>
         ${fairplay
