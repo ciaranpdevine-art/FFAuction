@@ -235,7 +235,7 @@ const FIREBASE_CONFIG = {
 };
 
 const ADMIN_PASSWORD_FALLBACK = "zxcvb"; // used until an admin sets a custom one
-const BUILD_NUMBER = "162"; // bump this by 1 every time a new file is handed over
+const BUILD_NUMBER = "163"; // bump this by 1 every time a new file is handed over
 
 let initializeApp, getFirestore, doc, setDoc, getDoc, onSnapshot, collection, writeBatch;
 try {
@@ -2252,21 +2252,21 @@ function renderFixtures() {
   `;
 }
 
-let selectedTransfersViewTeamId = null;
+let selectedTransfersViewTeamId = "all";
 
 function transferWindowName(windowId) {
   const w = (data.transferWindows || []).find((win) => win.id === windowId);
   return w ? w.name : "";
 }
 
-function renderTransferSection(title, list, sign, color) {
+function renderTransferSection(title, list, sign, color, showManager) {
   return `
     <div class="list-group-head">${title} (${list.length})</div>
     ${list.length ? list.map((t) => `
       <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid var(--line);padding:10px 16px;">
         <span style="min-width:0;flex:1 1 auto;">
           <span style="display:block;font-weight:600;">${esc(t.playerName)}${t.club ? ` <span class="muted" style="margin:0;font-weight:400;">(${esc(t.club)})</span>` : ""}</span>
-          <span class="muted" style="display:block;margin:2px 0 0;font-size:11px;">${esc(transferWindowName(t.windowId))}</span>
+          <span class="muted" style="display:block;margin:2px 0 0;font-size:11px;">${showManager ? esc(teamNameById(t.teamId)) + " · " : ""}${esc(transferWindowName(t.windowId))}</span>
         </span>
         <span style="flex:0 0 auto;min-width:72px;text-align:right;white-space:nowrap;font-family:'IBM Plex Mono', monospace;font-weight:700;color:${color};">${sign}${fmtCost(t.cost || 0)}</span>
       </div>
@@ -2297,23 +2297,29 @@ function renderTransferWindowsSummary() {
 
 function renderTransfers() {
   const gTeams = groupTeams(data, activeGroupId);
-  if (!selectedTransfersViewTeamId || !gTeams.some((t) => t.id === selectedTransfersViewTeamId)) {
-    selectedTransfersViewTeamId = gTeams[0] ? gTeams[0].id : null;
+  if (selectedTransfersViewTeamId !== "all" && !gTeams.some((t) => t.id === selectedTransfersViewTeamId)) {
+    selectedTransfersViewTeamId = "all";
   }
+  const showAll = selectedTransfersViewTeamId === "all";
   const teamBar = `
     <div class="team-select-bar" data-scroll-id="transfers-team-chips">
+      <button class="team-chip ${showAll ? "active" : ""}" data-action="select-transfers-team" data-team-id="all">All transfers</button>
       ${gTeams.map((t) => `<button class="team-chip ${selectedTransfersViewTeamId === t.id ? "active" : ""}" data-action="select-transfers-team" data-team-id="${t.id}">${esc(t.name)}</button>`).join("")}
     </div>
   `;
 
-  const entries = (data.transferLog || []).filter((t) => t.teamId === selectedTransfersViewTeamId);
+  const gTeamIds = new Set(gTeams.map((t) => t.id));
+  // Newest first when showing everyone, so the latest moves are at the top.
+  const entries = showAll
+    ? (data.transferLog || []).filter((t) => gTeamIds.has(t.teamId)).slice().reverse()
+    : (data.transferLog || []).filter((t) => t.teamId === selectedTransfersViewTeamId);
   const sold = entries.filter((t) => t.type === "sold");
   const signed = entries.filter((t) => t.type === "signed");
 
   return renderTransferWindowsSummary() + teamBar + `
     <div class="list-card">
-      ${renderTransferSection("Sold", sold, "+", "var(--turf)")}
-      ${renderTransferSection("Signed", signed, "-", "var(--danger)")}
+      ${renderTransferSection(showAll ? "Players out" : "Sold", sold, "+", "var(--turf)", showAll)}
+      ${renderTransferSection(showAll ? "Players in" : "Signed", signed, "-", "var(--danger)", showAll)}
     </div>
   `;
 }
