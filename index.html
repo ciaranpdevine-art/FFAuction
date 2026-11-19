@@ -235,7 +235,7 @@ const FIREBASE_CONFIG = {
 };
 
 const ADMIN_PASSWORD_FALLBACK = "zxcvb"; // used until an admin sets a custom one
-const BUILD_NUMBER = "163"; // bump this by 1 every time a new file is handed over
+const BUILD_NUMBER = "164"; // bump this by 1 every time a new file is handed over
 
 let initializeApp, getFirestore, doc, setDoc, getDoc, onSnapshot, collection, writeBatch;
 try {
@@ -3242,23 +3242,6 @@ function renderTransfersAdmin(weekOptions) {
         </select>
       </div>
 
-      ${(() => {
-        const gTeamIds = new Set(groupTeams(data, adminGroupId).map((t) => t.id));
-        const log = (data.transferLog || []).filter((t) => gTeamIds.has(t.teamId)).slice().reverse();
-        if (!log.length) return "";
-        return `
-          <div class="group-label">Recorded transfers — tap Undo if one was a mistake</div>
-          <div style="margin-bottom:16px;">
-            ${log.map((t) => `
-              <div class="admin-mini-row" style="gap:10px;">
-                <span style="min-width:0;flex:1 1 auto;">
-                  <strong>${t.type === "sold" ? "Sold" : "Signed"}:</strong> ${esc(t.playerName)} <span class="muted" style="margin:0;">· ${esc(teamNameById(t.teamId))} · ${esc(transferWindowName(t.windowId))} · ${fmtCost(t.cost || 0)}</span>
-                </span>
-                <button class="btn-ghost" style="flex:0 0 auto;" data-action="undo-transfer" data-log-id="${t.id}">↩ Undo</button>
-              </div>`).join("")}
-          </div>`;
-      })()}
-
       <div class="group-label">Sell a current player</div>
       <div class="add-row" style="margin-bottom:14px;">
         <select class="select" id="sell-player-select" style="width:auto;flex:1;">
@@ -3283,6 +3266,23 @@ function renderTransfersAdmin(weekOptions) {
         <input class="score-mini-input" type="number" step="0.1" id="sign-player-cost" placeholder="Cost" style="width:70px;" />
         <button class="btn-primary-sm" data-action="record-sign">Sign</button>
       </div>
+
+      ${(() => {
+        const gTeamIds = new Set(groupTeams(data, adminGroupId).map((t) => t.id));
+        const log = (data.transferLog || []).filter((t) => gTeamIds.has(t.teamId)).slice().reverse();
+        if (!log.length) return "";
+        return `
+          <div class="group-label">Recorded transfers — tap Undo if one was a mistake</div>
+          <div style="margin-bottom:16px;">
+            ${log.map((t) => `
+              <div class="admin-mini-row" style="gap:10px;">
+                <span style="min-width:0;flex:1 1 auto;">
+                  <strong>${t.type === "sold" ? "Sold" : "Signed"}:</strong> ${esc(t.playerName)} <span class="muted" style="margin:0;">· ${esc(teamNameById(t.teamId))} · ${esc(transferWindowName(t.windowId))} · ${fmtCost(t.cost || 0)}</span>
+                </span>
+                <button class="btn-ghost" style="flex:0 0 auto;" data-action="undo-transfer" data-log-id="${t.id}">↩ Undo</button>
+              </div>`).join("")}
+          </div>`;
+      })()}
     </div>
   `;
 }
