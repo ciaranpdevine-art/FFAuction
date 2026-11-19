@@ -235,7 +235,7 @@ const FIREBASE_CONFIG = {
 };
 
 const ADMIN_PASSWORD_FALLBACK = "zxcvb"; // used until an admin sets a custom one
-const BUILD_NUMBER = "161"; // bump this by 1 every time a new file is handed over
+const BUILD_NUMBER = "162"; // bump this by 1 every time a new file is handed over
 
 let initializeApp, getFirestore, doc, setDoc, getDoc, onSnapshot, collection, writeBatch;
 try {
@@ -3236,6 +3236,23 @@ function renderTransfersAdmin(weekOptions) {
         </select>
       </div>
 
+      ${(() => {
+        const gTeamIds = new Set(groupTeams(data, adminGroupId).map((t) => t.id));
+        const log = (data.transferLog || []).filter((t) => gTeamIds.has(t.teamId)).slice().reverse();
+        if (!log.length) return "";
+        return `
+          <div class="group-label">Recorded transfers — tap Undo if one was a mistake</div>
+          <div style="margin-bottom:16px;">
+            ${log.map((t) => `
+              <div class="admin-mini-row" style="gap:10px;">
+                <span style="min-width:0;flex:1 1 auto;">
+                  <strong>${t.type === "sold" ? "Sold" : "Signed"}:</strong> ${esc(t.playerName)} <span class="muted" style="margin:0;">· ${esc(teamNameById(t.teamId))} · ${esc(transferWindowName(t.windowId))} · ${fmtCost(t.cost || 0)}</span>
+                </span>
+                <button class="btn-ghost" style="flex:0 0 auto;" data-action="undo-transfer" data-log-id="${t.id}">↩ Undo</button>
+              </div>`).join("")}
+          </div>`;
+      })()}
+
       <div class="group-label">Sell a current player</div>
       <div class="add-row" style="margin-bottom:14px;">
         <select class="select" id="sell-player-select" style="width:auto;flex:1;">
@@ -4097,6 +4114,46 @@ function handleAction(e) {
     const ownership = (data.ownership || []).filter((o) => !gTeamIds.has(o.teamId));
     const transferLog = (data.transferLog || []).filter((t) => !gTeamIds.has(t.teamId));
     persist({ ...data, teams, ownership, transferLog });
+  }
+  else if (action === "undo-transfer") {
+    const logId = el.dataset.logId;
+    const t = (data.transferLog || []).find((x) => x.id === logId);
+    if (!t) return;
+    const team = data.teams.find((tm) => tm.id === t.teamId);
+    if (!team) return;
+    const verb = t.type === "sold" ? `put ${t.playerName} back in ${team.name}'s squad` : `remove ${t.playerName} from ${team.name}'s squad`;
+    if (!window.confirm(`Undo this transfer? This will ${verb}, and points go back to how they were before it.`)) return;
+    const ownershipList = data.ownership || [];
+    let ownership;
+    let squad = getSquadEntries(data, team);
+    if (t.type === "sold") {
+      const closed = ownershipList.find((o) => o.playerId === t.playerId && o.teamId === t.teamId && o.toWeek === t.week - 1);
+      const owner = findOwningTeam(data, t.playerId, adminGroupId);
+      if (owner && owner.id !== t.teamId) {
+        saveError = `Can't undo — ${t.playerName} is now in ${owner.name}'s squad. Undo that signing first.`;
+        render();
+        return;
+      }
+      if (!closed) {
+        saveError = "Can't undo this sale automatically — the original ownership record wasn't found. Use Reset all transfers instead.";
+        render();
+        return;
+      }
+      ownership = ownershipList.map((o) => o.id === closed.id ? { ...o, toWeek: null } : o);
+      if (!squad.some((e) => e.id === t.playerId)) squad = [...squad, { id: t.playerId, cost: t.cost }];
+    } else {
+      const open = ownershipList.find((o) => o.playerId === t.playerId && o.teamId === t.teamId && o.fromWeek === t.week && o.toWeek === null);
+      if (!open) {
+        saveError = `Can't undo this signing — ${t.playerName} has been sold or moved since. Undo the later transfer first.`;
+        render();
+        return;
+      }
+      ownership = ownershipList.filter((o) => o.id !== open.id);
+      squad = squad.filter((e) => e.id !== t.playerId);
+    }
+    const teams = data.teams.map((tm) => tm.id === t.teamId ? { ...tm, squad } : tm);
+    const transferLog = (data.transferLog || []).filter((x) => x.id !== logId);
+    persist({ ...data, ownership, teams, transferLog });
   }
   else if (action === "record-sell") {
     const windowId = document.getElementById("transfer-window-select").value;
