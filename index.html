@@ -235,7 +235,7 @@ const FIREBASE_CONFIG = {
 };
 
 const ADMIN_PASSWORD_FALLBACK = "zxcvb"; // used until an admin sets a custom one
-const BUILD_NUMBER = "160"; // bump this by 1 every time a new file is handed over
+const BUILD_NUMBER = "161"; // bump this by 1 every time a new file is handed over
 
 let initializeApp, getFirestore, doc, setDoc, getDoc, onSnapshot, collection, writeBatch;
 try {
@@ -2263,9 +2263,12 @@ function renderTransferSection(title, list, sign, color) {
   return `
     <div class="list-group-head">${title} (${list.length})</div>
     ${list.length ? list.map((t) => `
-      <div class="admin-mini-row" style="border-bottom:1px solid var(--line);padding:10px 16px;">
-        <span>${esc(t.playerName)}${t.club ? " (" + esc(t.club) + ")" : ""} <span class="muted" style="margin:0;font-size:11px;">· ${esc(transferWindowName(t.windowId))}</span></span>
-        <span style="font-family:'IBM Plex Mono', monospace;font-weight:700;color:${color};">${sign}${fmtCost(t.cost || 0)}</span>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid var(--line);padding:10px 16px;">
+        <span style="min-width:0;flex:1 1 auto;">
+          <span style="display:block;font-weight:600;">${esc(t.playerName)}${t.club ? ` <span class="muted" style="margin:0;font-weight:400;">(${esc(t.club)})</span>` : ""}</span>
+          <span class="muted" style="display:block;margin:2px 0 0;font-size:11px;">${esc(transferWindowName(t.windowId))}</span>
+        </span>
+        <span style="flex:0 0 auto;min-width:72px;text-align:right;white-space:nowrap;font-family:'IBM Plex Mono', monospace;font-weight:700;color:${color};">${sign}${fmtCost(t.cost || 0)}</span>
       </div>
     `).join("") : `<div class="muted" style="padding:10px 16px;margin-bottom:0;">None yet.</div>`}
   `;
