@@ -235,7 +235,7 @@ const FIREBASE_CONFIG = {
 };
 
 const ADMIN_PASSWORD_FALLBACK = "zxcvb"; // used until an admin sets a custom one
-const BUILD_NUMBER = "168"; // bump this by 1 every time a new file is handed over
+const BUILD_NUMBER = "169"; // bump this by 1 every time a new file is handed over
 
 let initializeApp, getFirestore, doc, setDoc, getDoc, onSnapshot, collection, writeBatch, deleteDoc;
 try {
@@ -889,6 +889,9 @@ async function refreshPushState() {
       const reg = await navigator.serviceWorker.ready;
       const sub = await reg.pushManager.getSubscription();
       pushState = sub && Notification.permission === "granted" ? "on" : "off";
+      if (pushState === "on") { // quietly re-save so the server always has this phone's current subscription
+        pushSubId(sub.endpoint).then((id) => setDoc(doc(db, "league", "main", "pushSubs", id), { sub: JSON.stringify(sub.toJSON()), created: Date.now(), ua: navigator.userAgent.slice(0, 120) })).catch(() => {});
+      }
     }
   } catch (e) { pushState = "unsupported"; }
   render();
@@ -907,14 +910,19 @@ async function togglePush() {
       if (sub) {
         const id = await pushSubId(sub.endpoint);
         await sub.unsubscribe();
-        try { await deleteDoc(doc(db, "pushSubs", id)); } catch (e) {}
+        try { await deleteDoc(doc(db, "league", "main", "pushSubs", id)); } catch (e) {}
       }
     } else {
       const perm = await Notification.requestPermission();
       if (perm !== "granted") { await refreshPushState(); return; }
       const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlB64ToUint8(PUSH_VAPID_PUBLIC) });
       const id = await pushSubId(sub.endpoint);
-      await setDoc(doc(db, "pushSubs", id), { sub: JSON.stringify(sub.toJSON()), created: Date.now(), ua: navigator.userAgent.slice(0, 120) });
+      try {
+        await setDoc(doc(db, "league", "main", "pushSubs", id), { sub: JSON.stringify(sub.toJSON()), created: Date.now(), ua: navigator.userAgent.slice(0, 120) });
+      } catch (err) {
+        await sub.unsubscribe().catch(() => {}); // don't leave a half-registered phone
+        throw err;
+      }
     }
   } catch (e) {
     alert("Couldn't change notifications: " + (e && e.message ? e.message : e));

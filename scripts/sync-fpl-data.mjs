@@ -104,7 +104,7 @@ async function sendPointsNotification(db, newResults) {
   if (!priv) { console.log("Push: VAPID_PRIVATE_KEY not set — skipping notifications."); return; }
   const webpush = (await import("web-push")).default; // loaded lazily so a missing package can never break the data sync
   webpush.setVapidDetails("https://github.com/ciaranpdevine-art/FFAuction", VAPID_PUBLIC_KEY, priv);
-  const snap = await getDocs(collection(db, "pushSubs"));
+  const snap = await getDocs(collection(db, "league", "main", "pushSubs"));
   if (snap.empty) { console.log("Push: nobody has turned notifications on yet."); return; }
   const latest = newResults[newResults.length - 1];
   const total = newResults.reduce((n, r) => n + r.labels.length, 0);
