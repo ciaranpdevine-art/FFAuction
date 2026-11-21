@@ -7,7 +7,12 @@ on:
     # The source dataset itself refreshes ~3x/day, so results appear at the
     # first run after each source refresh. GitHub may start runs a bit late.
     - cron: "17 * * * *"
-  workflow_dispatch: {} # lets you trigger a run manually from the Actions tab
+  workflow_dispatch: # lets you trigger a run manually from the Actions tab
+    inputs:
+      test_push:
+        description: "Only send a test notification to every phone (no data sync)"
+        type: boolean
+        default: false
 
 jobs:
   sync:
@@ -27,4 +32,5 @@ jobs:
         working-directory: scripts
         env:
           VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
+          TEST_PUSH: ${{ inputs.test_push }}
         run: node sync-fpl-data.mjs

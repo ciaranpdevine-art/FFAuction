@@ -97,6 +97,31 @@ function teamCodeToString(raw) {
   return Number.isFinite(n) ? String(Math.trunc(n)) : null;
 }
 
+// Sends one payload to every saved phone; drops subscriptions the push service says are gone.
+async function broadcast(db, message) {
+  const priv = process.env.VAPID_PRIVATE_KEY;
+  if (!priv) { console.log("Push: VAPID_PRIVATE_KEY not set — skipping notifications."); return; }
+  const snap = await getDocs(collection(db, "league", "main", "pushSubs"));
+  const subs = snap.docs.filter((d) => !d.id.startsWith("_") && d.data().sub);
+  if (!subs.length) { console.log("Push: nobody has turned notifications on yet."); return; }
+  const webpush = (await import("web-push")).default; // loaded lazily so a missing package can never break the data sync
+  webpush.setVapidDetails("https://github.com/ciaranpdevine-art/FFAuction", VAPID_PUBLIC_KEY, priv);
+  const payload = JSON.stringify(message);
+  let sent = 0, removed = 0, failed = 0;
+  await Promise.all(subs.map(async (d) => {
+    const ua = String(d.data().ua || "").slice(0, 60);
+    try {
+      await webpush.sendNotification(JSON.parse(d.data().sub), payload, { TTL: 6 * 3600 });
+      sent++;
+      console.log(`Push: sent to ${d.id.slice(0, 8)} (${ua})`);
+    } catch (e) {
+      if (e && (e.statusCode === 404 || e.statusCode === 410)) { removed++; await deleteDoc(d.ref).catch(() => {}); console.log(`Push: removed expired ${d.id.slice(0, 8)} (${ua})`); }
+      else { failed++; console.log(`Push: send failed for ${d.id.slice(0, 8)} (${e && (e.statusCode || e.message)})`); }
+    }
+  }));
+  console.log(`Push: ${sent} sent, ${removed} expired subscription(s) removed, ${failed} failed.`);
+}
+
 // Push notification to every phone that opted in via the app ("Turn on points
 // notifications"). Needs the VAPID_PRIVATE_KEY secret; without it this is skipped.
 // "New" is judged against a remembered list of already-announced finished matches
@@ -114,35 +139,23 @@ async function notifyNewResults(db, finishedNow) {
   const fresh = finishedNow.filter((r) => !seen.has(r.key));
   if (!fresh.length) { console.log("Push: no newly finished matches to announce."); return; }
 
-  const snap = await getDocs(collection(db, "league", "main", "pushSubs"));
-  const subs = snap.docs.filter((d) => !d.id.startsWith("_") && d.data().sub);
-  if (!subs.length) {
-    console.log("Push: nobody has turned notifications on yet.");
-  } else {
-    const webpush = (await import("web-push")).default; // loaded lazily so a missing package can never break the data sync
-    webpush.setVapidDetails("https://github.com/ciaranpdevine-art/FFAuction", VAPID_PUBLIC_KEY, priv);
+  await broadcast(db, (() => {
     const week = Math.max(...fresh.map((r) => r.week));
     const labels = fresh.filter((r) => r.week === week).map((r) => r.label);
     const shown = labels.slice(0, 3).join(", ");
     const more = fresh.length > Math.min(3, labels.length) ? ` (+${fresh.length - Math.min(3, labels.length)} more)` : "";
-    const payload = JSON.stringify({ title: `⚽ Week ${week} points updated`, body: `${shown}${more}. Tap to see the table.`, tag: "points-updated" });
-    let sent = 0, removed = 0, failed = 0;
-    await Promise.all(subs.map(async (d) => {
-      try {
-        await webpush.sendNotification(JSON.parse(d.data().sub), payload, { TTL: 6 * 3600 });
-        sent++;
-      } catch (e) {
-        if (e && (e.statusCode === 404 || e.statusCode === 410)) { removed++; await deleteDoc(d.ref).catch(() => {}); }
-        else { failed++; console.log(`Push: send failed (${e && (e.statusCode || e.message)})`); }
-      }
-    }));
-    console.log(`Push: ${fresh.length} new match(es) announced — ${sent} sent, ${removed} expired subscription(s) removed, ${failed} failed.`);
-  }
+    return { title: `⚽ Week ${week} points updated`, body: `${shown}${more}. Tap to see the table.`, tag: "points-updated" };
+  })());
   finishedNow.forEach((r) => seen.add(r.key));
   await setDoc(stateRef, { keys: [...seen], updated: Date.now() });
 }
 
 async function main() {
+  if (process.env.TEST_PUSH === "true") {
+    const app0 = initializeApp(FIREBASE_CONFIG);
+    await broadcast(getFirestore(app0), { title: "🔔 Test notification", body: "If you can see this, points notifications work on this phone.", tag: "points-test" });
+    process.exit(0);
+  }
   console.log(`Season folder: ${SOURCE_SEASON}`);
 
   const summaries = await fetchCsv("gameweek_summaries.csv");
