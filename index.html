@@ -235,7 +235,7 @@ const FIREBASE_CONFIG = {
 };
 
 const ADMIN_PASSWORD_FALLBACK = "zxcvb"; // used until an admin sets a custom one
-const BUILD_NUMBER = "165"; // bump this by 1 every time a new file is handed over
+const BUILD_NUMBER = "166"; // bump this by 1 every time a new file is handed over
 
 let initializeApp, getFirestore, doc, setDoc, getDoc, onSnapshot, collection, writeBatch;
 try {
@@ -388,7 +388,7 @@ let adminPasswordChangeStatus = null;
 let reportWeek = null;
 let positionChartWeek = null; // week selected in a team's "Weekly Pos" chart (null = none)
 let reportManagerFilter = "";
-let reportSubTab = "weekly"; // weekly | leaderboard
+let reportSubTab = "weekly"; // weekly | leaderboard | bestbuys | totw | impact
 let reportCopyStatus = null;
 let importStatus = null;
 let importingExternalIds = false;
@@ -1089,6 +1089,113 @@ function renderBestBuysAndDuds(groupId) {
     <div>
       <div class="group-label">🥶 Complete Duds — lowest 10 by points</div>
       ${completeDuds.length ? `<div class="list-card">${completeDuds.map(row).join("")}</div>` : `<div class="muted" style="padding:4px 2px;">Nothing recorded yet.</div>`}
+    </div>
+  `;
+}
+
+// "What if there had been no transfer window?" For each manager, compare the points
+// actually earned since each window with a counterfactual squad: signings removed,
+// sold players kept. Only weeks from the window onward differ; earlier weeks are identical.
+function buildTransferImpact(groupId) {
+  const log = data.transferLog || [];
+  const lastWeek = (() => {
+    let m = 0;
+    data.players.forEach((p) => Object.keys(data.scores[p.id] || {}).forEach((w) => { if ((data.scores[p.id] || {})[w] !== undefined) m = Math.max(m, Number(w)); }));
+    return m;
+  })();
+  const ptsIn = (pid, from, to) => {
+    let t = 0;
+    for (let w = from; w <= to; w++) t += ((data.scores[pid] || {})[w]) || 0;
+    return t;
+  };
+  const ownership = getAllOwnershipEntries(data);
+  const rows = groupTeams(data, groupId).map((team) => {
+    const tLog = log.filter((t) => t.teamId === team.id);
+    if (!tLog.length) return null;
+    const signed = tLog.filter((t) => t.type === "signed");
+    // A sale of a player who was signed in an earlier window never was part of the
+    // original squad, so he isn't added back into the "no transfers" squad.
+    const sold = tLog.filter((t) => t.type === "sold" && !signed.some((s) => s.playerId === t.playerId && s.week <= t.week));
+    const startWeek = Math.min(...tLog.map((t) => t.week));
+    const signedRows = signed.map((t) => {
+      const o = ownership.find((x) => x.teamId === team.id && x.playerId === t.playerId && x.fromWeek === t.week);
+      const to = o && o.toWeek !== null ? Math.min(o.toWeek, lastWeek) : lastWeek;
+      return { t, pts: ptsIn(t.playerId, t.week, to), perWeek: (w) => (o && w >= t.week && (o.toWeek === null || w <= o.toWeek)) ? (((data.scores[t.playerId] || {})[w]) || 0) : 0 };
+    });
+    const soldRows = sold.map((t) => ({ t, pts: ptsIn(t.playerId, t.week, lastWeek), perWeek: (w) => w >= t.week ? (((data.scores[t.playerId] || {})[w]) || 0) : 0 }));
+    const inPts = signedRows.reduce((a, r) => a + r.pts, 0);
+    const outPts = soldRows.reduce((a, r) => a + r.pts, 0);
+    const cum = [];
+    let running = 0;
+    for (let w = startWeek; w <= lastWeek; w++) {
+      running += signedRows.reduce((a, r) => a + r.perWeek(w), 0) - soldRows.reduce((a, r) => a + r.perWeek(w), 0);
+      cum.push({ week: w, diff: running });
+    }
+    // Actual points since the window (whole squad, every week from the first window).
+    let actual = 0;
+    ownership.filter((o) => o.teamId === team.id).forEach((o) => {
+      const from = Math.max(startWeek, o.fromWeek);
+      const to = Math.min(lastWeek, o.toWeek === null ? lastWeek : o.toWeek);
+      if (to >= from) actual += ptsIn(o.playerId, from, to);
+    });
+    return { team, startWeek, actual, without: actual - (inPts - outPts), diff: inPts - outPts, inPts, outPts, signedRows, soldRows, cum };
+  }).filter(Boolean).sort((a, b) => b.diff - a.diff);
+  return { rows, lastWeek };
+}
+
+function renderTransferImpact(groupId) {
+  const { rows } = buildTransferImpact(groupId);
+  if (!rows.length) {
+    return `<div class="muted" style="padding:4px 2px;">No transfers recorded yet — once a transfer window has been entered, this shows who gained or lost from it.</div>`;
+  }
+  const sgn = (n) => (n > 0 ? "+" : "") + n;
+  const col = (n) => n > 0 ? "var(--turf)" : n < 0 ? "#b3261e" : "inherit";
+  const playerLine = (r, sign) => `
+    <div style="display:flex;justify-content:space-between;gap:8px;padding:3px 0;font-size:13px;">
+      <span>${sign} ${esc(r.t.playerName)} <span class="muted" style="margin:0;font-size:11.5px;">${esc(r.t.club || "")} · ${fmtCost(r.t.cost)}</span></span>
+      <strong style="white-space:nowrap;">${r.pts} pts</strong>
+    </div>`;
+  const best = rows[0], worst = rows[rows.length - 1];
+  return `
+    <div style="margin-bottom:14px;">
+      <div class="group-label">🔀 Transfer impact — actual vs "no transfer window"</div>
+      <div class="muted" style="margin:2px 2px 10px;font-size:12.5px;">Points since the window, compared with what each squad would have scored had nobody sold or signed anyone. Counts from the first window week onward.</div>
+      ${rows.length > 1 && (best.diff !== 0 || worst.diff !== 0) ? `
+        <div class="list-card" style="padding:10px 16px;margin-bottom:12px;font-size:13.5px;">
+          🏆 Best window: <strong>${esc(best.team.name)}</strong> (<span style="color:${col(best.diff)}">${sgn(best.diff)}</span>)<br>
+          🤦 Worst window: <strong>${esc(worst.team.name)}</strong> (<span style="color:${col(worst.diff)}">${sgn(worst.diff)}</span>)
+        </div>` : ""}
+      <div class="list-card">
+        <div class="manage-row" style="padding:8px 16px;gap:8px;font-size:11.5px;" >
+          <span style="flex:1;" class="stat-label">Manager</span>
+          <span style="width:56px;text-align:right;" class="stat-label">Actual</span>
+          <span style="width:56px;text-align:right;" class="stat-label">Without</span>
+          <span style="width:52px;text-align:right;" class="stat-label">Diff</span>
+        </div>
+        ${rows.map((r) => `
+          <div class="manage-row" style="padding:10px 16px;gap:8px;">
+            <span style="flex:1;font-weight:600;">${esc(r.team.name)}</span>
+            <span style="width:56px;text-align:right;">${r.actual}</span>
+            <span style="width:56px;text-align:right;">${r.without}</span>
+            <span style="width:52px;text-align:right;font-weight:700;color:${col(r.diff)};">${sgn(r.diff)}</span>
+          </div>`).join("")}
+      </div>
+    </div>
+    <div>
+      <div class="group-label">📋 Who came in, who went out</div>
+      ${rows.map((r) => `
+        <div class="list-card" style="padding:12px 16px;margin-bottom:10px;">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:6px;">
+            <strong>${esc(r.team.name)}</strong>
+            <span style="font-weight:700;color:${col(r.diff)};">${sgn(r.diff)} net</span>
+          </div>
+          ${r.soldRows.length ? `<div class="muted" style="margin:4px 0 0;font-size:11.5px;">Out — points they'd have scored for you since</div>${r.soldRows.map((x) => playerLine(x, "➖")).join("")}` : ""}
+          ${r.signedRows.length ? `<div class="muted" style="margin:8px 0 0;font-size:11.5px;">In — points scored for you since signing</div>${r.signedRows.map((x) => playerLine(x, "➕")).join("")}` : ""}
+          <div style="display:flex;justify-content:space-between;padding-top:6px;margin-top:6px;border-top:1px solid var(--line);font-size:13px;">
+            <span>In ${r.inPts} − Out ${r.outPts}</span>
+            <span class="muted" style="margin:0;">${r.cum.length > 1 ? "By week: " + r.cum.map((c) => `GW${c.week} ${sgn(c.diff)}`).join(" · ") : ""}</span>
+          </div>
+        </div>`).join("")}
     </div>
   `;
 }
@@ -3373,8 +3480,9 @@ function renderReportPublic() {
         <button class="${reportSubTab === "leaderboard" ? "active" : ""}" data-action="set-report-subtab" data-subtab="leaderboard">Manager Leaderboard</button>
         <button class="${reportSubTab === "bestbuys" ? "active" : ""}" data-action="set-report-subtab" data-subtab="bestbuys">Best Buys & Duds</button>
         <button class="${reportSubTab === "totw" ? "active" : ""}" data-action="set-report-subtab" data-subtab="totw">Team of the Week</button>
+        <button class="${reportSubTab === "impact" ? "active" : ""}" data-action="set-report-subtab" data-subtab="impact">Transfer Impact</button>
       </div>
-      ${reportSubTab === "leaderboard" ? renderManagerLeaderboard(activeGroupId) : reportSubTab === "bestbuys" ? renderBestBuysAndDuds(activeGroupId) : reportSubTab === "totw" ? renderTeamOfTheWeek(activeGroupId) : `
+      ${reportSubTab === "leaderboard" ? renderManagerLeaderboard(activeGroupId) : reportSubTab === "bestbuys" ? renderBestBuysAndDuds(activeGroupId) : reportSubTab === "totw" ? renderTeamOfTheWeek(activeGroupId) : reportSubTab === "impact" ? renderTransferImpact(activeGroupId) : `
       <div class="add-row" style="margin-bottom:14px;flex-wrap:wrap;">
         <select class="select" id="report-week-select" style="width:auto;">
           <option value="all" ${reportWeek === "all" ? "selected" : ""}>All Weeks</option>
@@ -3408,8 +3516,9 @@ function renderWeeklyReportAdmin(weekOptions) {
         <button class="${reportSubTab === "leaderboard" ? "active" : ""}" data-action="set-report-subtab" data-subtab="leaderboard">Manager Leaderboard</button>
         <button class="${reportSubTab === "bestbuys" ? "active" : ""}" data-action="set-report-subtab" data-subtab="bestbuys">Best Buys & Duds</button>
         <button class="${reportSubTab === "totw" ? "active" : ""}" data-action="set-report-subtab" data-subtab="totw">Team of the Week</button>
+        <button class="${reportSubTab === "impact" ? "active" : ""}" data-action="set-report-subtab" data-subtab="impact">Transfer Impact</button>
       </div>
-      ${reportSubTab === "leaderboard" ? renderManagerLeaderboard(adminGroupId) : reportSubTab === "bestbuys" ? renderBestBuysAndDuds(adminGroupId) : reportSubTab === "totw" ? renderTeamOfTheWeek(adminGroupId) : `
+      ${reportSubTab === "leaderboard" ? renderManagerLeaderboard(adminGroupId) : reportSubTab === "bestbuys" ? renderBestBuysAndDuds(adminGroupId) : reportSubTab === "totw" ? renderTeamOfTheWeek(adminGroupId) : reportSubTab === "impact" ? renderTransferImpact(adminGroupId) : `
       <div class="add-row" style="margin-bottom:14px;flex-wrap:wrap;">
         <select class="select" id="report-week-select" style="width:auto;">
           <option value="all" ${reportWeek === "all" ? "selected" : ""}>All Weeks</option>
