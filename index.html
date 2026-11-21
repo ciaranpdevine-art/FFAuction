@@ -235,7 +235,7 @@ const FIREBASE_CONFIG = {
 };
 
 const ADMIN_PASSWORD_FALLBACK = "zxcvb"; // used until an admin sets a custom one
-const BUILD_NUMBER = "169"; // bump this by 1 every time a new file is handed over
+const BUILD_NUMBER = "170"; // bump this by 1 every time a new file is handed over
 
 let initializeApp, getFirestore, doc, setDoc, getDoc, onSnapshot, collection, writeBatch, deleteDoc;
 try {
@@ -391,6 +391,10 @@ let positionChartWeek = null; // week selected in a team's "Weekly Pos" chart (n
 let reportManagerFilter = "";
 let reportSubTab = "weekly"; // weekly | leaderboard | bestbuys | totw | impact
 let reportCopyStatus = null;
+let notifyTitle = "", notifyBody = "", notifyStatus = null, notifySending = false;
+const GH_TOKEN_KEY = "ffa_gh_dispatch_token";
+const GH_DISPATCH_URL = "https://api.github.com/repos/ciaranpdevine-art/FFAuction/actions/workflows/sync-fpl-data.yml/dispatches";
+function getGhToken() { try { return localStorage.getItem(GH_TOKEN_KEY) || ""; } catch (e) { return ""; } }
 let importStatus = null;
 let importingExternalIds = false;
 let externalIdImportStatus = null;
@@ -2848,6 +2852,7 @@ function renderAdmin(weekOptions) {
     ["transfers", "Transfers"],
     ["extras", "Extras"],
     ["report", "Report"],
+    ["notify", "Notify"],
   ];
   return `
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;">
@@ -3302,6 +3307,7 @@ function renderAdmin(weekOptions) {
     ${adminTab === "extras" ? renderCupGamesAdmin() : ""}
     ${adminTab === "extras" ? renderStatVisibilityAdmin() + renderPrizesAdmin() : ""}
     ${adminTab === "report" ? renderWeeklyReportAdmin(weekOptions) : ""}
+    ${adminTab === "notify" ? renderNotifyAdmin() : ""}
   `;
 }
 
@@ -3521,6 +3527,71 @@ function renderTransfersAdmin(weekOptions) {
       })()}
     </div>
   `;
+}
+
+function renderNotifyAdmin() {
+  const hasToken = !!getGhToken();
+  const autoOn = data.autoPointsNotify === true;
+  return `
+    <div class="card">
+      <h2 class="card-title">Send a notification</h2>
+      <p class="muted">Goes to everyone who has turned notifications on. ${hasToken ? "Sends within about 30 seconds." : "No GitHub token saved, so it's queued and goes out with the next hourly sync (up to an hour). Add a token below to send instantly."}</p>
+      <label class="label">Title</label>
+      <input class="input" id="notify-title" maxlength="60" placeholder="e.g. Transfer window opens Friday" value="${esc(notifyTitle)}" />
+      <label class="label">Message</label>
+      <textarea class="input" id="notify-body" rows="3" maxlength="200" placeholder="Your message…" style="resize:vertical;">${esc(notifyBody)}</textarea>
+      <div style="margin-top:12px;"><button class="btn-primary" data-action="send-notification" ${notifySending ? "disabled" : ""}>📣 ${notifySending ? "Sending…" : "Send to everyone"}</button></div>
+      ${notifyStatus ? `<div class="${notifyStatus.ok ? "muted" : "error-text"}" style="margin-top:10px;">${esc(notifyStatus.text)}</div>` : ""}
+    </div>
+    <div class="card">
+      <h2 class="card-title">Automatic "points updated" message</h2>
+      <p class="muted">The generic "⚽ Week N points updated" notification the sync sends when games finish. Off by default now so you can send your own.</p>
+      <label style="display:flex;align-items:center;gap:8px;padding:6px 0;font-size:14px;font-weight:600;">
+        <input type="checkbox" data-action="toggle-auto-notify" ${autoOn ? "checked" : ""} />
+        Send the automatic message
+      </label>
+    </div>
+    <div class="card">
+      <h2 class="card-title">Instant sending (optional)</h2>
+      <p class="muted">${hasToken ? "A token is saved on this device." : "Paste a GitHub token so Send works immediately instead of waiting for the next sync."} It stays on this device only — it is never saved in the app's data or code. Create one at GitHub → Settings → Developer settings → Fine-grained tokens: choose the FFAuction repository only, and under Repository permissions set <strong>Actions: Read and write</strong>.</p>
+      ${hasToken ? `<button class="btn-ghost" data-action="remove-gh-token">Remove token from this device</button>` : `
+        <input class="input" id="gh-token-input" type="password" placeholder="github_pat_…" autocomplete="off" />
+        <div style="margin-top:10px;"><button class="btn-primary" data-action="save-gh-token">Save token</button></div>`}
+    </div>
+  `;
+}
+
+async function sendAdminNotification() {
+  const title = notifyTitle.trim(), body = notifyBody.trim();
+  if (!title || !body) { notifyStatus = { ok: false, text: "Add both a title and a message." }; render(); return; }
+  if (!window.confirm(`Send this to everyone?\n\n${title}\n${body}`)) return;
+  notifySending = true; notifyStatus = null; render();
+  try {
+    await setDoc(doc(db, "league", "main", "pushSubs", "_out_" + Date.now()), { title, body, created: Date.now() });
+  } catch (e) {
+    notifySending = false;
+    notifyStatus = { ok: false, text: "Couldn't queue the message: " + (e && e.message ? e.message : e) };
+    render(); return;
+  }
+  const token = getGhToken();
+  let text = "Queued — it will go out with the next hourly sync.";
+  if (token) {
+    try {
+      const res = await fetch(GH_DISPATCH_URL, {
+        method: "POST",
+        headers: { Accept: "application/vnd.github+json", Authorization: "Bearer " + token, "X-GitHub-Api-Version": "2022-11-28", "Content-Type": "application/json" },
+        body: JSON.stringify({ ref: "main" }),
+      });
+      text = res.status === 204
+        ? "Sent — it should reach phones within about 30 seconds."
+        : `Queued, but the instant send failed (GitHub said ${res.status}${res.status === 401 || res.status === 403 || res.status === 404 ? " — check the token and its Actions permission" : ""}). It will go out with the next hourly sync.`;
+    } catch (e) {
+      text = "Queued, but couldn't reach GitHub for an instant send. It will go out with the next hourly sync.";
+    }
+  }
+  notifyTitle = ""; notifyBody = ""; notifySending = false;
+  notifyStatus = { ok: true, text };
+  render();
 }
 
 function renderCupGamesAdmin() {
@@ -3750,6 +3821,10 @@ function bindEvents() {
   if (weeklyPointsWeekSelect) weeklyPointsWeekSelect.addEventListener("change", (e) => {
     weeklyPointsImportWeek = Number(e.target.value);
   });
+  const notifyTitleInput = document.getElementById("notify-title");
+  if (notifyTitleInput) notifyTitleInput.addEventListener("input", (e) => { notifyTitle = e.target.value; });
+  const notifyBodyInput = document.getElementById("notify-body");
+  if (notifyBodyInput) notifyBodyInput.addEventListener("input", (e) => { notifyBody = e.target.value; });
   const adminScoresSearchInput = document.getElementById("admin-scores-search-input");
   if (adminScoresSearchInput) adminScoresSearchInput.addEventListener("input", (e) => {
     adminScoresSearchQuery = e.target.value;
@@ -3817,6 +3892,14 @@ function handleAction(e) {
   }
   else if (action === "set-subview") { subView = el.dataset.subview; moreMenuOpen = false; window.scrollTo(0, 0); render(); }
   else if (action === "sync-from-source") { syncFromSource(); }
+  else if (action === "send-notification") { sendAdminNotification(); }
+  else if (action === "toggle-auto-notify") { persist({ ...data, autoPointsNotify: el.checked }); }
+  else if (action === "save-gh-token") {
+    const v = (document.getElementById("gh-token-input") || {}).value || "";
+    if (v.trim()) { try { localStorage.setItem(GH_TOKEN_KEY, v.trim()); notifyStatus = { ok: true, text: "Token saved on this device." }; } catch (e) { notifyStatus = { ok: false, text: "Couldn't save the token in this browser." }; } }
+    render();
+  }
+  else if (action === "remove-gh-token") { try { localStorage.removeItem(GH_TOKEN_KEY); } catch (e) {} notifyStatus = null; render(); }
   else if (action === "toggle-more-menu") { moreMenuOpen = !moreMenuOpen; render(); }
   else if (action === "toggle-push") { togglePush(); }
   else if (action === "close-more-menu") { if (e.target !== el) return; moreMenuOpen = false; render(); }

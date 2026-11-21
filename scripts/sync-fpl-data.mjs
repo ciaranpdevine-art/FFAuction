@@ -122,12 +122,28 @@ async function broadcast(db, message) {
   console.log(`Push: ${sent} sent, ${removed} expired subscription(s) removed, ${failed} failed.`);
 }
 
+// Messages the admin queued from the app (league/main/pushSubs/_out_*): send, then delete.
+async function processOutbox(db) {
+  if (!process.env.VAPID_PRIVATE_KEY) return;
+  const snap = await getDocs(collection(db, "league", "main", "pushSubs"));
+  const queued = snap.docs.filter((d) => d.id.startsWith("_out_")).sort((a, b) => a.id.localeCompare(b.id));
+  for (const d of queued) {
+    const { title, body } = d.data();
+    if (title && body) {
+      console.log(`Push: sending admin message "${title}"`);
+      await broadcast(db, { title, body, tag: "admin-" + d.id });
+    }
+    await deleteDoc(d.ref).catch(() => {});
+  }
+  if (queued.length) console.log(`Push: ${queued.length} admin message(s) processed.`);
+}
+
 // Push notification to every phone that opted in via the app ("Turn on points
 // notifications"). Needs the VAPID_PRIVATE_KEY secret; without it this is skipped.
 // "New" is judged against a remembered list of already-announced finished matches
 // (league/main/pushSubs/_state), NOT against what this particular run wrote — so a
 // result saved earlier by the in-app "Sync from source now" button still gets announced.
-async function notifyNewResults(db, finishedNow) {
+async function notifyNewResults(db, finishedNow, announce) {
   const priv = process.env.VAPID_PRIVATE_KEY;
   if (!priv) { console.log("Push: VAPID_PRIVATE_KEY not set — skipping notifications."); return; }
   if (!finishedNow.length) return;
@@ -139,7 +155,9 @@ async function notifyNewResults(db, finishedNow) {
   const fresh = finishedNow.filter((r) => !seen.has(r.key));
   if (!fresh.length) { console.log("Push: no newly finished matches to announce."); return; }
 
-  await broadcast(db, (() => {
+  if (!announce) {
+    console.log(`Push: ${fresh.length} newly finished match(es) — automatic announcement is switched off in the app, recording them silently.`);
+  } else await broadcast(db, (() => {
     const week = Math.max(...fresh.map((r) => r.week));
     const labels = fresh.filter((r) => r.week === week).map((r) => r.label);
     const shown = labels.slice(0, 3).join(", ");
@@ -156,6 +174,9 @@ async function main() {
     await broadcast(getFirestore(app0), { title: "🔔 Test notification", body: "If you can see this, points notifications work on this phone.", tag: "points-test" });
     process.exit(0);
   }
+  try {
+    await processOutbox(getFirestore(initializeApp(FIREBASE_CONFIG, "outbox")));
+  } catch (e) { console.log(`Push: outbox step failed (${e.message})`); }
   console.log(`Season folder: ${SOURCE_SEASON}`);
 
   const summaries = await fetchCsv("gameweek_summaries.csv");
@@ -469,7 +490,7 @@ async function main() {
 
   const nothingToWrite = weeksWritten === 0 && fixturesUpdated === 0 && photoCodesFilled === 0;
   if (!nothingToWrite) await batch.commit();
-  try { await notifyNewResults(db, finishedNow); }
+  try { await notifyNewResults(db, finishedNow, mainData.autoPointsNotify === true); }
   catch (e) { console.log(`Push: notification step failed (${e.message}) — data sync itself succeeded.`); }
   if (nothingToWrite) {
     console.log("Nothing new to write.");
