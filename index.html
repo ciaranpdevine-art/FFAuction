@@ -235,7 +235,7 @@ const FIREBASE_CONFIG = {
 };
 
 const ADMIN_PASSWORD_FALLBACK = "zxcvb"; // used until an admin sets a custom one
-const BUILD_NUMBER = "166"; // bump this by 1 every time a new file is handed over
+const BUILD_NUMBER = "167"; // bump this by 1 every time a new file is handed over
 
 let initializeApp, getFirestore, doc, setDoc, getDoc, onSnapshot, collection, writeBatch;
 try {
@@ -796,6 +796,9 @@ function render() {
   if (view !== "admin") {
     const matched = (data.groups || []).find((g) => g.id === urlGroupParam);
     activeGroupId = matched ? matched.id : null;
+    // Only one league? Skip the "Which group are you in?" screen. With 2+ groups
+    // the chooser comes back automatically.
+    if (!activeGroupId && (data.groups || []).length === 1) activeGroupId = data.groups[0].id;
   }
 
   if (view === "public" && !activeGroupId) {
