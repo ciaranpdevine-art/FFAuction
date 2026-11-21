@@ -58,7 +58,7 @@
  */
 
 import { initializeApp } from "firebase/app";
-import { getFirestore, doc, getDoc, collection, getDocs, writeBatch } from "firebase/firestore";
+import { getFirestore, doc, getDoc, collection, getDocs, writeBatch, deleteDoc } from "firebase/firestore";
 import { parse } from "csv-parse/sync";
 
 const FIREBASE_CONFIG = {
@@ -71,6 +71,7 @@ const FIREBASE_CONFIG = {
 };
 
 const SOURCE_SEASON = "2026-2027";
+const VAPID_PUBLIC_KEY = "BGldMkDZ-7am7S1qiz6q8D-Zbxxr2AzZevzun-9T00V7O9Y4Y9jpORWpSvvmsTNJlxN-zkqRQYAtF2fucrJB3po";
 const STATS_GRACE_HOURS = 12; // see processed check in the weekly loop
 const MIN_COMPLETE_MATCH_MINUTES = 1800; // both teams combined; a full match is ~1,980
 const SOURCE_RAW_BASE = `https://raw.githubusercontent.com/olbauday/FPL-Core-Insights/main/data/${SOURCE_SEASON}`;
@@ -94,6 +95,37 @@ function norm(s) {
 function teamCodeToString(raw) {
   const n = Number(raw);
   return Number.isFinite(n) ? String(Math.trunc(n)) : null;
+}
+
+// Push notification to every phone that opted in via the app ("Turn on points
+// notifications"). Needs the VAPID_PRIVATE_KEY secret; without it this is skipped.
+async function sendPointsNotification(db, newResults) {
+  const priv = process.env.VAPID_PRIVATE_KEY;
+  if (!priv) { console.log("Push: VAPID_PRIVATE_KEY not set — skipping notifications."); return; }
+  const webpush = (await import("web-push")).default; // loaded lazily so a missing package can never break the data sync
+  webpush.setVapidDetails("https://github.com/ciaranpdevine-art/FFAuction", VAPID_PUBLIC_KEY, priv);
+  const snap = await getDocs(collection(db, "pushSubs"));
+  if (snap.empty) { console.log("Push: nobody has turned notifications on yet."); return; }
+  const latest = newResults[newResults.length - 1];
+  const total = newResults.reduce((n, r) => n + r.labels.length, 0);
+  const shown = latest.labels.slice(0, 3).join(", ");
+  const more = total > Math.min(3, latest.labels.length) ? ` (+${total - Math.min(3, latest.labels.length)} more)` : "";
+  const payload = JSON.stringify({
+    title: `⚽ Week ${latest.week} points updated`,
+    body: `${shown}${more}. Tap to see the table.`,
+    tag: "points-updated",
+  });
+  let sent = 0, removed = 0, failed = 0;
+  await Promise.all(snap.docs.map(async (d) => {
+    try {
+      await webpush.sendNotification(JSON.parse(d.data().sub), payload, { TTL: 6 * 3600 });
+      sent++;
+    } catch (e) {
+      if (e && (e.statusCode === 404 || e.statusCode === 410)) { removed++; await deleteDoc(d.ref).catch(() => {}); }
+      else { failed++; console.log(`Push: send failed (${e && (e.statusCode || e.message)})`); }
+    }
+  }));
+  console.log(`Push: ${sent} sent, ${removed} expired subscription(s) removed, ${failed} failed.`);
 }
 
 async function main() {
@@ -237,6 +269,7 @@ async function main() {
   let totalMatched = 0, totalUnmatched = 0;
   const unmatchedPlayersSample = [];
   let fixturesUpdated = 0, fixturesUnmatched = 0;
+  const newResults = []; // {week, labels[]} for each week with newly finished matches
   const unmatchedFixturesSample = [];
 
   for (const week of weeksToSync) {
@@ -374,6 +407,7 @@ async function main() {
 
     const premMatches = matchRows.filter((r) => norm(r.tournament) === "prem" && norm(r.finished) === "true");
     let weekFixturesUpdated = 0, weekFixturesUnmatched = 0;
+    const weekResultLabels = [];
     premMatches.forEach((r) => {
       const rawHome = clubNameByTeamCode[teamCodeToString(r.home_team)];
       const rawAway = clubNameByTeamCode[teamCodeToString(r.away_team)];
@@ -392,9 +426,11 @@ async function main() {
       if (fixtures[idx].homeScore !== homeScore || fixtures[idx].awayScore !== awayScore) {
         fixtures[idx] = { ...fixtures[idx], homeScore, awayScore };
         weekFixturesUpdated++;
+        weekResultLabels.push(`${homeClub} ${homeScore}-${awayScore} ${awayClub}`);
       }
     });
     fixturesUpdated += weekFixturesUpdated;
+    if (weekFixturesUpdated > 0) newResults.push({ week, labels: weekResultLabels });
     fixturesUnmatched += weekFixturesUnmatched;
     if (premMatches.length) {
       const tag = finishedFlagById[week] ? "" : " (in progress)";
@@ -412,6 +448,10 @@ async function main() {
   }
 
   await batch.commit();
+  if (newResults.length) {
+    try { await sendPointsNotification(db, newResults); }
+    catch (e) { console.log(`Push: notification step failed (${e.message}) — data sync itself succeeded.`); }
+  }
   console.log(`\nDone — wrote ${weeksWritten} week document(s), updated ${fixturesUpdated} fixture result(s), filled ${photoCodesFilled} photo code(s).`);
   console.log(`Player stats: ${totalMatched} matched total, ${totalUnmatched} unmatched total.`);
   if (unmatchedPlayersSample.length) {

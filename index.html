@@ -235,9 +235,9 @@ const FIREBASE_CONFIG = {
 };
 
 const ADMIN_PASSWORD_FALLBACK = "zxcvb"; // used until an admin sets a custom one
-const BUILD_NUMBER = "167"; // bump this by 1 every time a new file is handed over
+const BUILD_NUMBER = "168"; // bump this by 1 every time a new file is handed over
 
-let initializeApp, getFirestore, doc, setDoc, getDoc, onSnapshot, collection, writeBatch;
+let initializeApp, getFirestore, doc, setDoc, getDoc, onSnapshot, collection, writeBatch, deleteDoc;
 try {
   const appMod = await import("https://www.gstatic.com/firebasejs/12.15.0/firebase-app.js");
   const fsMod = await import("https://www.gstatic.com/firebasejs/12.15.0/firebase-firestore.js");
@@ -249,6 +249,7 @@ try {
   onSnapshot = fsMod.onSnapshot;
   collection = fsMod.collection;
   writeBatch = fsMod.writeBatch;
+  deleteDoc = fsMod.deleteDoc;
 } catch (e) {
   showFatalError(
     "Couldn't load the Firebase library from the network (" + e.message + "). Check your internet connection and try again."
@@ -855,6 +856,84 @@ function render() {
   }
 }
 
+// ---- Push notifications ("points updated") --------------------------------
+// Each phone that taps "Turn on notifications" saves its Web Push subscription to
+// Firestore (pushSubs/{id}). The hourly GitHub sync sends a push to every saved
+// subscription whenever it records new finished matches. VAPID public key only —
+// the private key lives in the GitHub secret VAPID_PRIVATE_KEY.
+const PUSH_VAPID_PUBLIC = "BGldMkDZ-7am7S1qiz6q8D-Zbxxr2AzZevzun-9T00V7O9Y4Y9jpORWpSvvmsTNJlxN-zkqRQYAtF2fucrJB3po";
+let pushState = "checking"; // checking | unsupported | needs-install | denied | off | on | busy
+function pushSupported() {
+  return "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+}
+function isIos() { return /iphone|ipad|ipod/i.test(navigator.userAgent); }
+function isStandalone() { return window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true; }
+function urlB64ToUint8(b64) {
+  const pad = "=".repeat((4 - (b64.length % 4)) % 4);
+  const raw = atob((b64 + pad).replace(/-/g, "+").replace(/_/g, "/"));
+  return Uint8Array.from([...raw].map((c) => c.charCodeAt(0)));
+}
+async function pushSubId(endpoint) {
+  try {
+    const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(endpoint));
+    return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 40);
+  } catch (e) {
+    return btoa(endpoint).replace(/[^a-zA-Z0-9]/g, "").slice(-40);
+  }
+}
+async function refreshPushState() {
+  try {
+    if (!pushSupported()) { pushState = isIos() && !isStandalone() ? "needs-install" : "unsupported"; }
+    else if (Notification.permission === "denied") pushState = "denied";
+    else {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.getSubscription();
+      pushState = sub && Notification.permission === "granted" ? "on" : "off";
+    }
+  } catch (e) { pushState = "unsupported"; }
+  render();
+}
+async function togglePush() {
+  if (pushState === "busy") return;
+  const was = pushState;
+  try {
+    if (was === "needs-install") { alert("On iPhone, notifications only work once the app is added to your Home Screen: tap Share → Add to Home Screen, then open it from there and try again."); return; }
+    if (was === "unsupported") { alert("This browser doesn't support notifications."); return; }
+    if (was === "denied") { alert("Notifications are blocked for this site. Allow them in your browser's site settings, then try again."); return; }
+    pushState = "busy"; render();
+    const reg = await navigator.serviceWorker.ready;
+    if (was === "on") {
+      const sub = await reg.pushManager.getSubscription();
+      if (sub) {
+        const id = await pushSubId(sub.endpoint);
+        await sub.unsubscribe();
+        try { await deleteDoc(doc(db, "pushSubs", id)); } catch (e) {}
+      }
+    } else {
+      const perm = await Notification.requestPermission();
+      if (perm !== "granted") { await refreshPushState(); return; }
+      const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlB64ToUint8(PUSH_VAPID_PUBLIC) });
+      const id = await pushSubId(sub.endpoint);
+      await setDoc(doc(db, "pushSubs", id), { sub: JSON.stringify(sub.toJSON()), created: Date.now(), ua: navigator.userAgent.slice(0, 120) });
+    }
+  } catch (e) {
+    alert("Couldn't change notifications: " + (e && e.message ? e.message : e));
+  }
+  await refreshPushState();
+}
+function pushMenuItem() {
+  const label = {
+    checking: "🔔 Notifications…",
+    unsupported: "🔕 Notifications not supported here",
+    "needs-install": "🔔 Notifications (add to Home Screen first)",
+    denied: "🔕 Notifications blocked in browser",
+    off: "🔔 Turn on points notifications",
+    on: "🔔 Notifications on — tap to turn off",
+    busy: "🔔 Working…",
+  }[pushState];
+  return `<button class="bn-sheet-item" data-action="toggle-push">${label}</button>`;
+}
+
 function renderBottomNav() {
   const rumperSettings = (data.rumperLeagueByGroup || {})[activeGroupId];
   const rumperEnabled = rumperSettings && rumperSettings.enabled;
@@ -880,6 +959,7 @@ function renderBottomNav() {
       <div class="bn-backdrop" data-action="close-more-menu">
         <div class="bn-sheet">
           ${more.map(([key, label]) => `<button class="bn-sheet-item ${subView === key ? "active" : ""}" data-action="set-subview" data-subview="${key}">${label}</button>`).join("")}
+          ${pushMenuItem()}
         </div>
       </div>` : ""}
     <nav class="bottom-nav">
@@ -3730,6 +3810,7 @@ function handleAction(e) {
   else if (action === "set-subview") { subView = el.dataset.subview; moreMenuOpen = false; window.scrollTo(0, 0); render(); }
   else if (action === "sync-from-source") { syncFromSource(); }
   else if (action === "toggle-more-menu") { moreMenuOpen = !moreMenuOpen; render(); }
+  else if (action === "toggle-push") { togglePush(); }
   else if (action === "close-more-menu") { if (e.target !== el) return; moreMenuOpen = false; render(); }
   else if (action === "show-player-points-modal") { playerPointsModalId = el.dataset.playerId; render(); }
   else if (action === "close-player-points-modal") {

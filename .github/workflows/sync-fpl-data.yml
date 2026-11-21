@@ -25,4 +25,6 @@ jobs:
 
       - name: Run sync
         working-directory: scripts
+        env:
+          VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
         run: node sync-fpl-data.mjs
