@@ -235,7 +235,7 @@ const FIREBASE_CONFIG = {
 };
 
 const ADMIN_PASSWORD_FALLBACK = "zxcvb"; // used until an admin sets a custom one
-const BUILD_NUMBER = "172"; // bump this by 1 every time a new file is handed over
+const BUILD_NUMBER = "173"; // bump this by 1 every time a new file is handed over
 
 let initializeApp, getFirestore, doc, setDoc, getDoc, onSnapshot, collection, writeBatch, deleteDoc;
 try {
@@ -1117,15 +1117,26 @@ function renderManagerLeaderboard(groupId) {
 
 function buildBestBuysAndDuds(groupId) {
   const players = data.players.filter((p) => !!findOwningTeam(data, p.id, groupId));
+  const ownership = getAllOwnershipEntries(data);
+  // Latest gameweek that has any points, so we know how many weeks a new signing has had.
+  let lastWeek = 0;
+  data.players.forEach((p) => Object.keys(data.scores[p.id] || {}).forEach((w) => { if ((data.scores[p.id] || {})[w] !== undefined) lastWeek = Math.max(lastWeek, Number(w)); }));
   const withInfo = players.map((p) => {
     const owner = findOwningTeam(data, p.id, groupId);
     const entry = owner ? getSquadEntries(data, owner).find((e) => e.id === p.id) : null;
     const cost = entry && entry.cost !== null && entry.cost !== undefined ? entry.cost : (p.cost || 0);
-    const points = getPlayerSeasonPoints(p.id);
-    return { player: p, owner, cost, points, value: cost > 0 ? points / cost : 0 };
+    // Only points earned while this manager has owned him — a mid-season signing
+    // doesn't get credit for what he scored before the manager paid for him.
+    const own = owner ? ownership.find((o) => o.playerId === p.id && o.teamId === owner.id && o.toWeek === null) : null;
+    const fromWeek = own ? Math.max(1, own.fromWeek) : 1;
+    let points = 0;
+    for (let w = fromWeek; w <= (data.totalWeeks || lastWeek); w++) points += ((data.scores[p.id] || {})[w]) || 0;
+    const weeksOwned = Math.max(0, lastWeek - fromWeek + 1);
+    return { player: p, owner, cost, points, weeksOwned, value: cost > 0 ? points / cost : 0 };
   });
-  const bestBuys = withInfo.filter((x) => x.cost > 0).slice().sort((a, b) => b.value - a.value).slice(0, 10);
-  const completeDuds = withInfo.slice().sort((a, b) => (a.points - b.points) || (b.cost - a.cost)).slice(0, 10);
+  const bestBuys = withInfo.filter((x) => x.cost > 0 && x.weeksOwned > 0).slice().sort((a, b) => b.value - a.value).slice(0, 10);
+  // A signing needs a few gameweeks under his belt before he can be called a dud.
+  const completeDuds = withInfo.filter((x) => x.weeksOwned >= 3).slice().sort((a, b) => (a.points - b.points) || (b.cost - a.cost)).slice(0, 10);
   return { bestBuys, completeDuds };
 }
 
@@ -1180,11 +1191,11 @@ function renderBestBuysAndDuds(groupId) {
   `;
   return `
     <div style="margin-bottom:18px;">
-      <div class="group-label">🏅 Best Buys — top 10 by value</div>
+      <div class="group-label">🏅 Best Buys — top 10 by value (points while owned ÷ cost)</div>
       ${bestBuys.length ? `<div class="list-card">${bestBuys.map(row).join("")}</div>` : `<div class="muted" style="padding:4px 2px;">Nothing recorded yet.</div>`}
     </div>
     <div>
-      <div class="group-label">🥶 Complete Duds — lowest 10 by points</div>
+      <div class="group-label">🥶 Complete Duds — lowest 10 by points (owned 3+ gameweeks)</div>
       ${completeDuds.length ? `<div class="list-card">${completeDuds.map(row).join("")}</div>` : `<div class="muted" style="padding:4px 2px;">Nothing recorded yet.</div>`}
     </div>
   `;
