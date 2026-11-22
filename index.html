@@ -235,7 +235,7 @@ const FIREBASE_CONFIG = {
 };
 
 const ADMIN_PASSWORD_FALLBACK = "zxcvb"; // used until an admin sets a custom one
-const BUILD_NUMBER = "174"; // bump this by 1 every time a new file is handed over
+const BUILD_NUMBER = "175"; // bump this by 1 every time a new file is handed over
 
 let initializeApp, getFirestore, doc, setDoc, getDoc, onSnapshot, collection, writeBatch, deleteDoc;
 try {
@@ -1160,7 +1160,8 @@ function buildBestBuysAndDuds(groupId) {
 }
 
 function buildTeamOfTheWeek(week, groupId) {
-  const players = data.players.filter((p) => !!findOwningTeam(data, p.id, groupId));
+  const ownerFor = makeWeekOwnerLookup(groupId, week);
+  const players = data.players.filter((p) => !!ownerFor(p.id));
   const withPoints = players
     .map((p) => ({ player: p, points: (data.scores[p.id] || {})[week] }))
     .filter((x) => x.points !== undefined)
@@ -1333,17 +1334,29 @@ function renderTransferImpact(groupId) {
   `;
 }
 
+// Who owned a player during a given gameweek (within one group). Used so a player
+// signed in a later window never shows up in earlier weeks' reports.
+function makeWeekOwnerLookup(groupId, week) {
+  const teams = groupTeams(data, groupId);
+  const entries = getAllOwnershipEntries(data).filter((o) => o.fromWeek <= week && (o.toWeek === null || week <= o.toWeek));
+  return (playerId) => {
+    const o = entries.find((x) => x.playerId === playerId && teams.some((t) => t.id === x.teamId));
+    return o ? teams.find((t) => t.id === o.teamId) : null;
+  };
+}
+
 function buildWeeklyReport(week, groupId, filterTeamId) {
-  let players = data.players.filter((p) => !!findOwningTeam(data, p.id, groupId));
+  const seasonMode = week === null;
+  const ownerFor = seasonMode ? (pid) => findOwningTeam(data, pid, groupId) : makeWeekOwnerLookup(groupId, week);
+  let players = data.players.filter((p) => !!ownerFor(p.id));
   if (filterTeamId) {
     players = players.filter((p) => {
-      const o = findOwningTeam(data, p.id, groupId);
+      const o = ownerFor(p.id);
       return o && o.id === filterTeamId;
     });
   }
-  const seasonMode = week === null;
   const withWeekData = players.map((p) => {
-    const owner = findOwningTeam(data, p.id, groupId);
+    const owner = ownerFor(p.id);
     const points = seasonMode ? getPlayerSeasonPoints(p.id) : (data.scores[p.id] || {})[week];
     const stats = seasonMode ? getPlayerSeasonStats(p.id) : (((data.playerStats || {})[p.id] || {})[week] || {});
     return { player: p, points, stats, owner };
@@ -2750,12 +2763,27 @@ function renderWeekBar(weekOptions) {
 }
 
 function getTopScorer(week) {
+  // Points count for whoever owned the player at the time: a player signed in a
+  // later window gets no credit for gameweeks before he joined.
+  const teams = groupTeams(data, activeGroupId);
+  const teamById = {};
+  teams.forEach((t) => { teamById[t.id] = t; });
   let best = null;
-  data.players.forEach((p) => {
-    const owner = findOwningTeam(data, p.id, activeGroupId);
-    if (!owner) return; // only signed players count toward this
-    const pts = week ? ((data.scores[p.id] || {})[week] || 0) : getPlayerSeasonPoints(p.id);
-    if (!best || pts > best.points) best = { player: p, points: pts, teamName: owner.name };
+  getAllOwnershipEntries(data).forEach((o) => {
+    const team = teamById[o.teamId];
+    if (!team) return;
+    const p = data.players.find((pp) => pp.id === o.playerId);
+    if (!p) return;
+    let pts = 0;
+    if (week) {
+      if (o.fromWeek > week || (o.toWeek !== null && week > o.toWeek)) return;
+      pts = (data.scores[p.id] || {})[week] || 0;
+    } else {
+      const from = Math.max(1, o.fromWeek);
+      const to = o.toWeek === null ? data.totalWeeks : Math.min(data.totalWeeks, o.toWeek);
+      for (let w = from; w <= to; w++) pts += ((data.scores[p.id] || {})[w]) || 0;
+    }
+    if (!best || pts > best.points) best = { player: p, points: pts, teamName: team.name };
   });
   if (!best || best.points <= 0) return null;
   return best;
@@ -2765,7 +2793,7 @@ function renderTable(teamTotals) {
   const topScorer = getTopScorer(selectedWeek);
   const topScorerPhoto = topScorer ? renderPlayerPhotoImg(topScorer.player, 34) : "";
   const banner = topScorer ? `
-    <div class="card" style="display:flex;align-items:center;gap:12px;padding:14px 16px;margin-bottom:14px;">
+    <div class="card" style="display:flex;align-items:center;gap:12px;padding:14px 16px;margin-bottom:14px;cursor:pointer;" data-action="show-player-points-modal" data-player-id="${topScorer.player.id}">
       ${topScorerPhoto || `<span style="font-size:22px;">🏆</span>`}
       <div>
         <div class="stat-label" style="text-align:left;margin-bottom:2px;">${selectedWeek ? `Player of the week · Wk ${selectedWeek}` : "Top scorer this season"}</div>
