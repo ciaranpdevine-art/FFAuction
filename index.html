@@ -235,7 +235,7 @@ const FIREBASE_CONFIG = {
 };
 
 const ADMIN_PASSWORD_FALLBACK = "zxcvb"; // used until an admin sets a custom one
-const BUILD_NUMBER = "171"; // bump this by 1 every time a new file is handed over
+const BUILD_NUMBER = "172"; // bump this by 1 every time a new file is handed over
 
 let initializeApp, getFirestore, doc, setDoc, getDoc, onSnapshot, collection, writeBatch, deleteDoc;
 try {
@@ -840,11 +840,11 @@ function render() {
       ${view === "admin" ? renderAdmin(weekOptions) : ""}
     </main>
     ${renderFooter()}
+    ${renderFixtureModal()}
     ${renderPlayerPointsModal()}
     ${renderPlayerWeekDetailModal()}
     ${renderPlayerSeasonStatsModal()}
     ${renderPlayerMinsModal()}
-    ${renderFixtureModal()}
     ${renderPlayerPhotoModal()}
     ${renderComparePlayersModal()}
     ${view === "public" ? renderBottomNav() : ""}
@@ -1780,7 +1780,7 @@ function renderFixtureModal() {
   [...home, ...away].forEach((r) => { if (r.pts !== undefined) byManager[r.team.name] = (byManager[r.team.name] || 0) + r.pts; });
   const managerTotals = Object.entries(byManager).sort((a, b) => b[1] - a[1]);
   const playerRow = (r) => `
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 16px;border-top:1px solid var(--line);">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 16px;border-top:1px solid var(--line);cursor:pointer;" data-action="show-player-points-modal" data-player-id="${r.p.id}">
       <span style="display:flex;align-items:center;gap:8px;min-width:0;flex:1;">
         ${renderPlayerPhotoImg(r.p, 30)}
         <span style="min-width:0;">
