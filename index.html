@@ -235,7 +235,7 @@ const FIREBASE_CONFIG = {
 };
 
 const ADMIN_PASSWORD_FALLBACK = "zxcvb"; // used until an admin sets a custom one
-const BUILD_NUMBER = "173"; // bump this by 1 every time a new file is handed over
+const BUILD_NUMBER = "174"; // bump this by 1 every time a new file is handed over
 
 let initializeApp, getFirestore, doc, setDoc, getDoc, onSnapshot, collection, writeBatch, deleteDoc;
 try {
@@ -1137,7 +1137,26 @@ function buildBestBuysAndDuds(groupId) {
   const bestBuys = withInfo.filter((x) => x.cost > 0 && x.weeksOwned > 0).slice().sort((a, b) => b.value - a.value).slice(0, 10);
   // A signing needs a few gameweeks under his belt before he can be called a dud.
   const completeDuds = withInfo.filter((x) => x.weeksOwned >= 3).slice().sort((a, b) => (a.points - b.points) || (b.cost - a.cost)).slice(0, 10);
-  return { bestBuys, completeDuds };
+  // Players sold in a transfer window, judged on what they scored for the manager who sold them.
+  const teamsInGroup = groupTeams(data, groupId);
+  const soldDuds = (data.transferLog || [])
+    .filter((t) => t.type === "sold" && teamsInGroup.some((tm) => tm.id === t.teamId))
+    .map((t) => {
+      const p = data.players.find((pp) => pp.id === t.playerId);
+      const team = teamsInGroup.find((tm) => tm.id === t.teamId);
+      if (!p || !team) return null;
+      const own = ownership.find((o) => o.playerId === t.playerId && o.teamId === t.teamId && o.toWeek === t.week - 1);
+      const fromWeek = own ? Math.max(1, own.fromWeek) : 1;
+      let points = 0;
+      for (let w = fromWeek; w <= t.week - 1; w++) points += ((data.scores[p.id] || {})[w]) || 0;
+      const cost = t.cost || 0;
+      const win = (data.transferWindows || []).find((w) => w.id === t.windowId);
+      return { player: p, owner: team, cost, points, value: cost > 0 ? points / cost : 0, note: `sold ${win ? win.name : "Wk " + t.week}` };
+    })
+    .filter(Boolean)
+    .sort((a, b) => (a.points - b.points) || (b.cost - a.cost))
+    .slice(0, 10);
+  return { bestBuys, completeDuds, soldDuds };
 }
 
 function buildTeamOfTheWeek(week, groupId) {
@@ -1175,12 +1194,12 @@ function renderTeamOfTheWeek(groupId) {
 }
 
 function renderBestBuysAndDuds(groupId) {
-  const { bestBuys, completeDuds } = buildBestBuysAndDuds(groupId);
+  const { bestBuys, completeDuds, soldDuds } = buildBestBuysAndDuds(groupId);
   const row = (x) => `
     <div class="manage-row" style="flex-wrap:wrap;padding:10px 16px;gap:8px;cursor:pointer;" data-action="show-player-points-modal" data-player-id="${x.player.id}">
       <span style="flex:1;min-width:130px;display:flex;align-items:center;gap:8px;">
         ${renderPlayerPhotoImg(x.player, 30)}
-        <span>${esc(x.player.name)}<br><span class="muted" style="margin:0;font-size:11.5px;">${x.owner ? esc(x.owner.name) : ""}</span></span>
+        <span>${esc(x.player.name)}<br><span class="muted" style="margin:0;font-size:11.5px;">${x.owner ? esc(x.owner.name) : ""}${x.note ? " · " + esc(x.note) : ""}</span></span>
       </span>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
         <div style="text-align:center;"><div class="stat-label">Pts</div>${scoreTile(x.points, true, false, false)}</div>
@@ -1198,6 +1217,12 @@ function renderBestBuysAndDuds(groupId) {
       <div class="group-label">🥶 Complete Duds — lowest 10 by points (owned 3+ gameweeks)</div>
       ${completeDuds.length ? `<div class="list-card">${completeDuds.map(row).join("")}</div>` : `<div class="muted" style="padding:4px 2px;">Nothing recorded yet.</div>`}
     </div>
+    ${soldDuds.length ? `
+    <div style="margin-top:18px;">
+      <div class="group-label">🗑️ Sold in the transfer window — biggest duds</div>
+      <div class="muted" style="margin:2px 2px 8px;font-size:12.5px;">The 10 lowest-scoring players managers sold, by points scored before they were sold.</div>
+      <div class="list-card">${soldDuds.map(row).join("")}</div>
+    </div>` : ""}
   `;
 }
 
