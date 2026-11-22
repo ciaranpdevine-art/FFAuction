@@ -235,7 +235,7 @@ const FIREBASE_CONFIG = {
 };
 
 const ADMIN_PASSWORD_FALLBACK = "zxcvb"; // used until an admin sets a custom one
-const BUILD_NUMBER = "170"; // bump this by 1 every time a new file is handed over
+const BUILD_NUMBER = "171"; // bump this by 1 every time a new file is handed over
 
 let initializeApp, getFirestore, doc, setDoc, getDoc, onSnapshot, collection, writeBatch, deleteDoc;
 try {
@@ -367,6 +367,7 @@ let playerPointsModalId = null;
 let playerWeekDetail = null; // { playerId, week }
 let playerSeasonStatsModalId = null;
 let playerMinsModalId = null;
+let fixtureModalId = null;
 let playerPhotoModalId = null;
 let compareModalOpen = false;
 let compareAId = null;
@@ -843,6 +844,7 @@ function render() {
     ${renderPlayerWeekDetailModal()}
     ${renderPlayerSeasonStatsModal()}
     ${renderPlayerMinsModal()}
+    ${renderFixtureModal()}
     ${renderPlayerPhotoModal()}
     ${renderComparePlayersModal()}
     ${view === "public" ? renderBottomNav() : ""}
@@ -1743,6 +1745,73 @@ function renderPlayerMinsModal() {
   `;
 }
 
+// Tap a fixture: every owned player from either club, which manager has him, and
+// (once played) his minutes and points for that gameweek.
+function renderFixtureModal() {
+  if (!fixtureModalId) return "";
+  const f = (data.fixtures || []).find((x) => x.id === fixtureModalId);
+  if (!f) return "";
+  const week = Number(f.week);
+  const lc = (v) => String(v || "").toLowerCase();
+  const hasResult = (f.homeScore !== null && f.homeScore !== undefined) || (f.awayScore !== null && f.awayScore !== undefined);
+  const teams = groupTeams(data, activeGroupId);
+  const teamIds = new Set(teams.map((t) => t.id));
+  const owners = getAllOwnershipEntries(data).filter((o) => teamIds.has(o.teamId) && o.fromWeek <= week && (o.toWeek === null || week <= o.toWeek));
+  const ownerOf = (pid) => { const o = owners.find((x) => x.playerId === pid); return o ? teams.find((t) => t.id === o.teamId) : null; };
+  const doubleWeek = (club) => (data.fixtures || []).filter((x) => Number(x.week) === week && (lc(x.homeClub) === lc(club) || lc(x.awayClub) === lc(club))).length > 1;
+  const sideRows = (club) => data.players
+    .filter((p) => lc(p.club) === lc(club))
+    .map((p) => {
+      const team = ownerOf(p.id);
+      if (!team) return null;
+      const pts = (data.scores[p.id] || {})[week];
+      const st = ((data.playerStats || {})[p.id] || {})[week] || {};
+      const mins = st.minutes;
+      let status;
+      if (pts === undefined) status = "yet";
+      else if (mins !== undefined && mins === 0) status = "dnp";
+      else status = "played";
+      return { p, team, pts, mins, status };
+    })
+    .filter(Boolean)
+    .sort((a, b) => (b.pts === undefined ? -999 : b.pts) - (a.pts === undefined ? -999 : a.pts) || a.p.name.localeCompare(b.p.name));
+  const home = sideRows(f.homeClub), away = sideRows(f.awayClub);
+  const byManager = {};
+  [...home, ...away].forEach((r) => { if (r.pts !== undefined) byManager[r.team.name] = (byManager[r.team.name] || 0) + r.pts; });
+  const managerTotals = Object.entries(byManager).sort((a, b) => b[1] - a[1]);
+  const playerRow = (r) => `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 16px;border-top:1px solid var(--line);">
+      <span style="display:flex;align-items:center;gap:8px;min-width:0;flex:1;">
+        ${renderPlayerPhotoImg(r.p, 30)}
+        <span style="min-width:0;">
+          <span style="display:block;font-weight:600;">${esc(r.p.name)} <span class="muted" style="margin:0;font-weight:400;font-size:11px;">${esc(r.p.position || "")}</span></span>
+          <span class="muted" style="display:block;margin:1px 0 0;font-size:11.5px;">${esc(r.team.name)}${r.status === "played" && r.mins !== undefined ? ` · ${r.mins} min` : r.status === "dnp" ? " · didn't play" : ""}</span>
+        </span>
+      </span>
+      ${r.status === "yet" ? `<span class="muted" style="margin:0;font-size:12px;">yet to play</span>` : scoreTile(r.pts, true, false, false)}
+    </div>`;
+  const side = (club, rows) => `
+    <div class="list-group-head">${esc(club)}${doubleWeek(club) ? ` <span class="muted" style="margin:0;font-weight:400;text-transform:none;">(two games this week — points cover both)</span>` : ""}</div>
+    ${rows.length ? rows.map(playerRow).join("") : `<div class="muted" style="padding:10px 16px;margin:0;">No-one from this club is in a manager's squad.</div>`}`;
+  return `
+    <div class="modal-backdrop" data-action="close-fixture-modal">
+      <div class="modal-box">
+        <div class="modal-header">
+          <span class="modal-title">${esc(f.homeClub)} ${hasResult ? `${f.homeScore ?? "–"} : ${f.awayScore ?? "–"}` : "v"} ${esc(f.awayClub)}</span>
+          <button class="modal-close-btn" data-action="close-fixture-modal">✕</button>
+        </div>
+        <div class="muted" style="padding:0 16px 8px;margin:0;font-size:12px;">Week ${week}${f.date ? " · " + esc(fmtFixtureDate(f.date)) : ""} · ${hasResult ? "Points each manager's players earned" : "Manager players in this game"}</div>
+        ${side(f.homeClub, home)}
+        ${side(f.awayClub, away)}
+        ${managerTotals.length ? `
+          <div class="list-group-head">Points by manager (this gameweek)</div>
+          ${managerTotals.map(([name, total]) => `
+            <div style="display:flex;justify-content:space-between;padding:8px 16px;border-top:1px solid var(--line);font-size:14px;"><span>${esc(name)}</span>${scoreTile(total, true, false, false)}</div>`).join("")}` : ""}
+      </div>
+    </div>
+  `;
+}
+
 function renderPlayerSeasonStatsModal() {
   if (!playerSeasonStatsModalId) return "";
   const p = data.players.find((pp) => pp.id === playerSeasonStatsModalId);
@@ -2463,7 +2532,7 @@ function renderFixtures() {
       ${dateGroups.map((group) => `
         <div class="list-group-head">${group.key ? esc(fmtFixtureDate(group.key)) : "Date TBC"}</div>
         ${group.fixtures.map((f) => `
-          <div class="fixture-row">
+          <div class="fixture-row" style="cursor:pointer;" data-action="show-fixture" data-fixture-id="${esc(f.id)}">
             <span class="fixture-team">${esc(f.homeClub)}</span>
             <span class="fixture-score">${(f.homeScore !== null && f.homeScore !== undefined) || (f.awayScore !== null && f.awayScore !== undefined) ? `${f.homeScore ?? "–"} : ${f.awayScore ?? "–"}` : "v"}</span>
             <span class="fixture-team away">${esc(f.awayClub)}</span>
@@ -3914,6 +3983,12 @@ function handleAction(e) {
   else if (action === "close-player-week-detail") {
     if (el.classList.contains("modal-backdrop") && e.target !== el) return;
     playerWeekDetail = null;
+    render();
+  }
+  else if (action === "show-fixture") { fixtureModalId = el.dataset.fixtureId; render(); }
+  else if (action === "close-fixture-modal") {
+    if (el.classList.contains("modal-backdrop") && e.target !== el) return;
+    fixtureModalId = null;
     render();
   }
   else if (action === "show-player-mins") { e.stopPropagation(); playerMinsModalId = el.dataset.playerId; render(); }
