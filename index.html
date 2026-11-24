@@ -235,7 +235,7 @@ const FIREBASE_CONFIG = {
 };
 
 const ADMIN_PASSWORD_FALLBACK = "zxcvb"; // used until an admin sets a custom one
-const BUILD_NUMBER = "175"; // bump this by 1 every time a new file is handed over
+const BUILD_NUMBER = "176"; // bump this by 1 every time a new file is handed over
 
 let initializeApp, getFirestore, doc, setDoc, getDoc, onSnapshot, collection, writeBatch, deleteDoc;
 try {
@@ -935,6 +935,26 @@ async function togglePush() {
   }
   await refreshPushState();
 }
+// Diagnostic: show a notification straight from this phone (no server involved) and
+// report what the browser knows. If this appears but server pushes don't, delivery is
+// the issue; if it doesn't appear, the phone/browser is suppressing notifications.
+async function testLocalNotification() {
+  const lines = [];
+  try {
+    lines.push("Permission: " + Notification.permission);
+    const reg = await navigator.serviceWorker.ready;
+    lines.push("Service worker: " + (reg.active ? reg.active.state : "none") + " (" + reg.scope.replace(location.origin, "") + ")");
+    const sub = await reg.pushManager.getSubscription();
+    lines.push("Push subscription: " + (sub ? "yes (" + new URL(sub.endpoint).host + ")" : "NONE — turn notifications off and on again"));
+    lines.push("Installed app mode: " + (isStandalone() ? "yes" : "no (browser tab)"));
+    await reg.showNotification("🔔 Local test", { body: "If you can see this, this phone can display notifications.", icon: "icon-192.png", tag: "local-test" });
+    lines.push("Local notification sent — check your notification shade.");
+  } catch (e) {
+    lines.push("Error: " + (e && e.message ? e.message : e));
+  }
+  alert(lines.join("\n"));
+}
+
 function pushMenuItem() {
   const label = {
     checking: "🔔 Notifications…",
@@ -945,7 +965,7 @@ function pushMenuItem() {
     on: "🔔 Notifications on — tap to turn off",
     busy: "🔔 Working…",
   }[pushState];
-  return `<button class="bn-sheet-item" data-action="toggle-push">${label}</button>`;
+  return `<button class="bn-sheet-item" data-action="toggle-push">${label}</button>` + (pushState === "on" ? `<button class="bn-sheet-item" data-action="test-local-notification">🧪 Test notification on this phone</button>` : "");
 }
 
 function renderBottomNav() {
@@ -4035,6 +4055,7 @@ function handleAction(e) {
   else if (action === "remove-gh-token") { try { localStorage.removeItem(GH_TOKEN_KEY); } catch (e) {} notifyStatus = null; render(); }
   else if (action === "toggle-more-menu") { moreMenuOpen = !moreMenuOpen; render(); }
   else if (action === "toggle-push") { togglePush(); }
+  else if (action === "test-local-notification") { testLocalNotification(); }
   else if (action === "close-more-menu") { if (e.target !== el) return; moreMenuOpen = false; render(); }
   else if (action === "show-player-points-modal") { playerPointsModalId = el.dataset.playerId; render(); }
   else if (action === "close-player-points-modal") {
